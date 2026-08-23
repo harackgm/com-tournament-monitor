@@ -12,6 +12,7 @@ LINE_USER_ID = os.environ.get("LINE_USER_ID", "")
 # テスト対象：第14戦のページURL
 TEST_URL = "https://www.kanritsuriba.com/at/2026_14/"
 TIMEOUT_SEC = 20
+TARGET_YEAR = 2026
 
 
 # ==========================================
@@ -29,10 +30,23 @@ def get_theme_color(location_name):
 
 
 # ==========================================
-# 厳密版：エントリー日時抽出ロジック（近接検索）
+# 大会開催日の抽出ロジック
+# ==========================================
+def extract_event_date_str(text, year=TARGET_YEAR):
+    # 文章から「X月Y日」または「YYYY年X月Y日」を探す
+    match = re.search(r"(?:(\d{4})年)?\s*(\d{1,2})月(\d{1,2})日", text)
+    if match:
+        y = match.group(1) if match.group(1) else str(year)
+        m = int(match.group(2))
+        d = int(match.group(3))
+        return f"{y}年{m:02d}月{d:02d}日"
+    return "開催日不明"
+
+
+# ==========================================
+# エントリー開始日時の抽出ロジック（近接検索）
 # ==========================================
 def extract_datetime_from_text(text):
-    # 「(インターネット)エントリー」の直後50文字以内にある「月日」と「時刻」を厳密抽出
     pattern_strict = re.search(
         r"(?:インターネットエントリー|エントリー|受付|募集)[^\d\n]{0,50}?(?:(\d{1,2})月(\d{1,2})日|(\d{1,2})[/.-](\d{1,2}))[^\d\n]{0,30}?(\d{1,2}):(\d{2})",
         text,
@@ -44,7 +58,6 @@ def extract_datetime_from_text(text):
         mm = pattern_strict.group(6)
         return f"{int(m):02d}月{int(d):02d}日 {int(hh):02d}:{mm}"
 
-    # フォールバック：文章内で「月日」と「時刻」が20文字以内に近接している箇所を取得
     pattern_near = re.search(
         r"(?:(\d{1,2})月(\d{1,2})日|(\d{1,2})[/.-](\d{1,2}))[^\d\n]{0,20}?(\d{1,2}):(\d{2})",
         text,
@@ -60,10 +73,10 @@ def extract_datetime_from_text(text):
 
 
 # ==========================================
-# LINE Push Message (地域カラー連動 Flex Message)
+# LINE Push Message (開催日＋エントリー日 表示 Flex Message)
 # ==========================================
 def send_line_flex_carousel(
-    round_num, location, entry_str, page_url, theme_color
+    round_num, location, event_date_str, entry_str, page_url, theme_color
 ):
     if not LINE_CHANNEL_ACCESS_TOKEN or not LINE_USER_ID:
         print("エラー: LINE接続情報が未設定です。")
@@ -121,6 +134,28 @@ def send_line_flex_carousel(
                                         "wrap": True,
                                     },
                                     {"type": "separator"},
+                                    # --- 新設：大会開催日 ---
+                                    {
+                                        "type": "box",
+                                        "layout": "vertical",
+                                        "spacing": "xs",
+                                        "contents": [
+                                            {
+                                                "type": "text",
+                                                "text": "📅 大会開催日",
+                                                "size": "xs",
+                                                "color": "#888888",
+                                            },
+                                            {
+                                                "type": "text",
+                                                "text": event_date_str,
+                                                "size": "sm",
+                                                "weight": "bold",
+                                                "color": "#333333",
+                                            },
+                                        ],
+                                    },
+                                    # --- エントリー開始日時 ---
                                     {
                                         "type": "box",
                                         "layout": "vertical",
@@ -173,7 +208,7 @@ def send_line_flex_carousel(
         if response.status_code != 200:
             print(f"送信失敗詳細 ({response.status_code}): {response.text}")
         response.raise_for_status()
-        print("第14戦のカルーセル送信に成功しました。")
+        print("大会開催日入りカルーセルメッセージの送信に成功しました。")
     except Exception as e:
         print(f"送信エラー: {e}")
 
@@ -192,33 +227,32 @@ def fetch_page_text(url):
 
 
 def main():
-    print("第14戦ページの抽出修正テストを開始します。")
+    print("大会開催日抽出テストを開始します。")
 
-    # 1. 1ページ目（/2/を含む検索）
     sub_url = TEST_URL.rstrip("/") + "/2/"
     text_p2 = fetch_page_text(sub_url)
-    entry_str = extract_datetime_from_text(text_p2)
-    final_url = sub_url if entry_str else TEST_URL
+    text_p1 = fetch_page_text(TEST_URL)
 
-    if not entry_str:
-        text_p1 = fetch_page_text(TEST_URL)
-        entry_str = extract_datetime_from_text(text_p1)
+    # テキスト結合（両ページから情報取得）
+    combined_text = (text_p2 + " " + text_p1).strip()
 
-    # タイトルと開催地の取得
-    text_for_title = text_p2 if text_p2 else fetch_page_text(TEST_URL)
-    match_title = re.search(r"第(\d+)戦([^\s大会を]+)", text_for_title)
+    # 第何戦・開催地の取得
+    match_title = re.search(r"第(\d+)戦([^\s大会を]+)", combined_text)
     round_num = match_title.group(1) if match_title else "14"
     location = match_title.group(2) if match_title else "アメイズトラウトエリア"
 
+    # 大会開催日・エントリー日時の抽出
+    event_date_str = extract_event_date_str(combined_text)
+    entry_str = extract_datetime_from_text(text_p2) or extract_datetime_from_text(text_p1)
     if not entry_str:
         entry_str = "日時不明"
 
-    # テーマカラー取得（パープル）
+    final_url = sub_url if extract_datetime_from_text(text_p2) else TEST_URL
     theme_color = get_theme_color(location)
 
     # LINE送信実行
     send_line_flex_carousel(
-        round_num, location, entry_str, final_url, theme_color
+        round_num, location, event_date_str, entry_str, final_url, theme_color
     )
 
 

@@ -29,6 +29,38 @@ def get_theme_color(location_name):
 
 
 # ==========================================
+# エントリー日時抽出ロジック（正規表現）
+# ==========================================
+def extract_datetime_from_text(text):
+    pattern = re.search(
+        r"(?:エントリー|受付|募集).*?(?:(\d{1,2})月(\d{1,2})日|(\d{1,2})[/.-](\d{1,2})).*?(\d{1,2}):(\d{2})",
+        text,
+        re.DOTALL,
+    )
+    if pattern:
+        m = pattern.group(1) or pattern.group(3)
+        d = pattern.group(2) or pattern.group(4)
+        hh = pattern.group(5)
+        mm = pattern.group(6)
+        return f"{int(m):02d}月{int(d):02d}日 {int(hh):02d}:{mm}"
+
+    # 条件緩和検索
+    pattern_loose = re.search(
+        r"(?:(\d{1,2})月(\d{1,2})日|(\d{1,2})[/.-](\d{1,2})).*?(\d{1,2}):(\d{2})",
+        text,
+        re.DOTALL,
+    )
+    if pattern_loose:
+        m = pattern_loose.group(1) or pattern_loose.group(3)
+        d = pattern_loose.group(2) or pattern_loose.group(4)
+        hh = pattern_loose.group(5)
+        mm = pattern_loose.group(6)
+        return f"{int(m):02d}月{int(d):02d}日 {int(hh):02d}:{mm}"
+
+    return None
+
+
+# ==========================================
 # LINE Push Message (地域カラー連動 Flex Message)
 # ==========================================
 def send_line_flex_carousel(
@@ -137,7 +169,7 @@ def send_line_flex_carousel(
 
     try:
         response = requests.post(
-            url, headers=headers, json=flex_payload, timeout=TIMEOUT_SEC
+            url, headers=headers, json=payload_bytes if 'payload_bytes' in locals() else flex_payload, timeout=TIMEOUT_SEC
         )
         if response.status_code != 200:
             print(f"送信失敗詳細 ({response.status_code}): {response.text}")
@@ -147,46 +179,53 @@ def send_line_flex_carousel(
         print(f"送信エラー: {e}")
 
 
-def main():
-    print("第14戦ページの取得・テスト送信を開始します。")
-
+def fetch_page_text(url):
     headers = {"User-Agent": "Mozilla/5.0"}
     try:
-        res = requests.get(TEST_URL, headers=headers, timeout=TIMEOUT_SEC)
-        res.raise_for_status()
-        soup = BeautifulSoup(res.text, "html.parser")
+        res = requests.get(url, headers=headers, timeout=TIMEOUT_SEC)
+        if res.status_code == 200:
+            soup = BeautifulSoup(res.text, "html.parser")
+            content_area = soup.find("div", class_="entry-content") or soup
+            return content_area.get_text(strip=True)
+    except Exception:
+        pass
+    return ""
 
-        content_area = soup.find("div", class_="entry-content") or soup
-        text = content_area.get_text(strip=True)
 
-        match_title = re.search(r"第(\d+)戦([^\s大会を]+)", text)
-        round_num = match_title.group(1) if match_title else "14"
-        location = match_title.group(2) if match_title else "対象会場"
+def main():
+    print("第14戦ページの多重巡回解析を開始します。")
 
-        match_entry = re.search(
-            r"(?:エントリー).*?(?:(\d{1,2})月(\d{1,2})日|(\d{1,2})/(\d{1,2})).*?(\d{1,2}):(\d{2})",
-            text,
-        )
-        if match_entry:
-            if match_entry.group(1):
-                m, d = match_entry.group(1), match_entry.group(2)
-            else:
-                m, d = match_entry.group(3), match_entry.group(4)
-            hh, mm = match_entry.group(5), match_entry.group(6)
-            entry_str = f"{int(m):02d}月{int(d):02d}日 {int(hh):02d}:{mm}"
-        else:
-            entry_str = "日時不明"
+    # 1. まず本ページ（1ページ目）を取得
+    text_p1 = fetch_page_text(TEST_URL)
 
-        # 開催場所に応じたテーマカラーを取得
-        theme_color = get_theme_color(location)
+    # 第何戦・開催地の抽出
+    match_title = re.search(r"第(\d+)戦([^\s大会を]+)", text_p1)
+    round_num = match_title.group(1) if match_title else "14"
+    location = match_title.group(2) if match_title else "アメイズトラウトエリア"
 
-        # 送信実行
-        send_line_flex_carousel(
-            round_num, location, entry_str, TEST_URL, theme_color
-        )
+    # 1ページ目から日時を検索
+    entry_str = extract_datetime_from_text(text_p1)
 
-    except Exception as e:
-        print(f"テスト実行エラー: {e}")
+    # 2. 1ページ目で見つからない場合、2ページ目（/2/）を巡回するフォールバック処理
+    final_url = TEST_URL
+    if not entry_str:
+        print("1ページ目に日時が見つからないため、2ページ目(/2/)を確認します...")
+        sub_url = TEST_URL.rstrip("/") + "/2/"
+        text_p2 = fetch_page_text(sub_url)
+        entry_str = extract_datetime_from_text(text_p2)
+        if entry_str:
+            final_url = sub_url
+
+    if not entry_str:
+        entry_str = "日時不明"
+
+    # テーマカラー取得
+    theme_color = get_theme_color(location)
+
+    # LINE送信実行
+    send_line_flex_carousel(
+        round_num, location, entry_str, final_url, theme_color
+    )
 
 
 if __name__ == "__main__":

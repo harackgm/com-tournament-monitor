@@ -9,15 +9,31 @@ from bs4 import BeautifulSoup
 LINE_CHANNEL_ACCESS_TOKEN = os.environ.get("LINE_CHANNEL_ACCESS_TOKEN", "")
 LINE_USER_ID = os.environ.get("LINE_USER_ID", "")
 
-# テスト対象：第1戦のページURL
-TEST_URL = "https://www.kanritsuriba.com/at/2026_01/"
+# テスト対象：第14戦のページURL
+TEST_URL = "https://www.kanritsuriba.com/at/2026_14/"
 TIMEOUT_SEC = 20
 
 
 # ==========================================
-# LINE Push Message (標準規格準拠 Flex Message)
+# 地域別のテーマカラー判定ロジック
 # ==========================================
-def send_line_flex_carousel(round_num, location, entry_str, page_url):
+def get_theme_color(location_name):
+    if any(kw in location_name for kw in ["浜名湖", "東海", "静岡"]):
+        return "#FF9800"  # 🟠 オレンジ（静岡・東海エリア）
+    elif any(kw in location_name for kw in ["白州", "山梨", "長野", "甲信越"]):
+        return "#4CAF50"  # 🟢 グリーン（山梨・甲信越エリア）
+    elif any(kw in location_name for kw in ["キングフィッシャー", "東山湖", "関東", "栃木"]):
+        return "#03A9F4"  # 🔵 ブルー（関東エリア）
+    else:
+        return "#9C27B0"  # 🟣 パープル（その他・未登録エリア）
+
+
+# ==========================================
+# LINE Push Message (地域カラー連動 Flex Message)
+# ==========================================
+def send_line_flex_carousel(
+    round_num, location, entry_str, page_url, theme_color
+):
     if not LINE_CHANNEL_ACCESS_TOKEN or not LINE_USER_ID:
         print("エラー: LINE接続情報が未設定です。")
         return
@@ -28,7 +44,6 @@ def send_line_flex_carousel(round_num, location, entry_str, page_url):
         "Authorization": f"Bearer {LINE_CHANNEL_ACCESS_TOKEN}",
     }
 
-    # LINE公式ガイドライン準拠の安全なカルーセルJSON構造
     flex_payload = {
         "to": LINE_USER_ID,
         "messages": [
@@ -43,7 +58,7 @@ def send_line_flex_carousel(round_num, location, entry_str, page_url):
                             "header": {
                                 "type": "box",
                                 "layout": "vertical",
-                                "backgroundColor": "#03A9F4",
+                                "backgroundColor": theme_color,
                                 "contents": [
                                     {
                                         "type": "text",
@@ -109,7 +124,7 @@ def send_line_flex_carousel(round_num, location, entry_str, page_url):
                                             "uri": page_url,
                                         },
                                         "style": "primary",
-                                        "color": "#03A9F4",
+                                        "color": theme_color,
                                     }
                                 ],
                             },
@@ -127,13 +142,13 @@ def send_line_flex_carousel(round_num, location, entry_str, page_url):
         if response.status_code != 200:
             print(f"送信失敗詳細 ({response.status_code}): {response.text}")
         response.raise_for_status()
-        print("カルーセルメッセージの送信に成功しました。")
+        print("第14戦のカルーセル送信に成功しました。")
     except Exception as e:
         print(f"送信エラー: {e}")
 
 
 def main():
-    print("カルーセル表示の動作テスト（第1戦データ）を開始します。")
+    print("第14戦ページの取得・テスト送信を開始します。")
 
     headers = {"User-Agent": "Mozilla/5.0"}
     try:
@@ -145,10 +160,8 @@ def main():
         text = content_area.get_text(strip=True)
 
         match_title = re.search(r"第(\d+)戦([^\s大会を]+)", text)
-        round_num = match_title.group(1) if match_title else "1"
-        location = (
-            match_title.group(2) if match_title else "浜名湖フィッシングリゾート"
-        )
+        round_num = match_title.group(1) if match_title else "14"
+        location = match_title.group(2) if match_title else "対象会場"
 
         match_entry = re.search(
             r"(?:エントリー).*?(?:(\d{1,2})月(\d{1,2})日|(\d{1,2})/(\d{1,2})).*?(\d{1,2}):(\d{2})",
@@ -162,10 +175,15 @@ def main():
             hh, mm = match_entry.group(5), match_entry.group(6)
             entry_str = f"{int(m):02d}月{int(d):02d}日 {int(hh):02d}:{mm}"
         else:
-            entry_str = "12月16日 20:00"
+            entry_str = "日時不明"
 
-        # カルーセル形式で送信
-        send_line_flex_carousel(round_num, location, entry_str, TEST_URL)
+        # 開催場所に応じたテーマカラーを取得
+        theme_color = get_theme_color(location)
+
+        # 送信実行
+        send_line_flex_carousel(
+            round_num, location, entry_str, TEST_URL, theme_color
+        )
 
     except Exception as e:
         print(f"テスト実行エラー: {e}")

@@ -4,17 +4,18 @@ import requests
 from bs4 import BeautifulSoup
 
 # ==========================================
-# 環境変数からLINE接続情報を取得
+# 安全制御・環境変数設定
 # ==========================================
 LINE_CHANNEL_ACCESS_TOKEN = os.environ.get("LINE_CHANNEL_ACCESS_TOKEN", "")
 LINE_USER_ID = os.environ.get("LINE_USER_ID", "")
 
+# テスト対象：第1戦のページURL
 TEST_URL = "https://www.kanritsuriba.com/at/2026_01/"
 TIMEOUT_SEC = 20
 
 
 # ==========================================
-# LINE Push Message (Flex Message カルーセル送信)
+# LINE Push Message (標準規格準拠 Flex Message)
 # ==========================================
 def send_line_flex_carousel(round_num, location, entry_str, page_url):
     if not LINE_CHANNEL_ACCESS_TOKEN or not LINE_USER_ID:
@@ -27,7 +28,7 @@ def send_line_flex_carousel(round_num, location, entry_str, page_url):
         "Authorization": f"Bearer {LINE_CHANNEL_ACCESS_TOKEN}",
     }
 
-    # Flex Message (カルーセル形式) のJSON構造
+    # LINE公式ガイドライン準拠の安全なカルーセルJSON構造
     flex_payload = {
         "to": LINE_USER_ID,
         "messages": [
@@ -39,12 +40,10 @@ def send_line_flex_carousel(round_num, location, entry_str, page_url):
                     "contents": [
                         {
                             "type": "bubble",
-                            "size": "medium",
                             "header": {
                                 "type": "box",
                                 "layout": "vertical",
                                 "backgroundColor": "#03A9F4",
-                                "paddingAll": "12px",
                                 "contents": [
                                     {
                                         "type": "text",
@@ -106,12 +105,11 @@ def send_line_flex_carousel(round_num, location, entry_str, page_url):
                                         "type": "button",
                                         "action": {
                                             "type": "uri",
-                                            "label": "🔗 大会詳細・エントリー",
+                                            "label": "🔗 詳細・エントリー",
                                             "uri": page_url,
                                         },
                                         "style": "primary",
                                         "color": "#03A9F4",
-                                        "height": "sm",
                                     }
                                 ],
                             },
@@ -126,6 +124,8 @@ def send_line_flex_carousel(round_num, location, entry_str, page_url):
         response = requests.post(
             url, headers=headers, json=flex_payload, timeout=TIMEOUT_SEC
         )
+        if response.status_code != 200:
+            print(f"送信失敗詳細 ({response.status_code}): {response.text}")
         response.raise_for_status()
         print("カルーセルメッセージの送信に成功しました。")
     except Exception as e:
@@ -133,7 +133,7 @@ def send_line_flex_carousel(round_num, location, entry_str, page_url):
 
 
 def main():
-    print("カルーセル表示の動作テストを開始します。")
+    print("カルーセル表示の動作テスト（第1戦データ）を開始します。")
 
     headers = {"User-Agent": "Mozilla/5.0"}
     try:
@@ -164,7 +164,7 @@ def main():
         else:
             entry_str = "12月16日 20:00"
 
-        # カルーセル形式でLINEへ送信
+        # カルーセル形式で送信
         send_line_flex_carousel(round_num, location, entry_str, TEST_URL)
 
     except Exception as e:

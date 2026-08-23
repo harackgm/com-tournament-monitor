@@ -9,8 +9,8 @@ from bs4 import BeautifulSoup
 LINE_CHANNEL_ACCESS_TOKEN = os.environ.get("LINE_CHANNEL_ACCESS_TOKEN", "")
 LINE_USER_ID = os.environ.get("LINE_USER_ID", "")
 
-# テスト対象：第21戦（白州トラウトエリア・シルフ）のページURL
-TEST_URL = "https://www.kanritsuriba.com/at/2026_21/"
+# テスト対象：第1戦のページURL
+TEST_URL = "https://www.kanritsuriba.com/at/2026_01/"
 TIMEOUT_SEC = 20
 
 
@@ -40,7 +40,7 @@ def send_line_message(text_message):
 
 
 def main():
-    print("テスト実行を開始します（実際のページから1件のみ取得して送信）。")
+    print("第1戦ページの取得・テスト送信を開始します。")
 
     headers = {"User-Agent": "Mozilla/5.0"}
     try:
@@ -53,9 +53,9 @@ def main():
 
         # 第何戦・開催地の抽出
         match_title = re.search(r"第(\d+)戦([^\s大会を]+)", text)
-        round_num = match_title.group(1) if match_title else "21"
+        round_num = match_title.group(1) if match_title else "1"
         location = (
-            match_title.group(2) if match_title else "白州トラウトエリア・シルフ"
+            match_title.group(2) if match_title else "浜名湖フィッシングリゾート"
         )
 
         # エントリー開始日時の抽出
@@ -71,9 +71,9 @@ def main():
             hh, mm = match_entry.group(5), match_entry.group(6)
             entry_str = f"{int(m):02d}/{int(d):02d} {int(hh):02d}:{mm}"
         else:
-            entry_str = "08/25 20:00"
+            entry_str = "12/16 20:00"
 
-        # 本番と同一フォーマットの通知メッセージを作成
+        # デザイン変更なし（シルフ実行時と完全同一のメッセージ構造）
         test_msg = (
             f"🧪【動作テスト通知】\n"
             f"実ページ（第{round_num}戦）から自動取得したデータです。\n\n"

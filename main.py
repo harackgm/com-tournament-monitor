@@ -4,13 +4,13 @@ import requests
 from bs4 import BeautifulSoup
 
 # ==========================================
-# 安全制御・環境変数設定
+# 環境変数からLINE接続情報を取得
 # ==========================================
 LINE_CHANNEL_ACCESS_TOKEN = os.environ.get("LINE_CHANNEL_ACCESS_TOKEN", "")
 LINE_USER_ID = os.environ.get("LINE_USER_ID", "")
 
-# テスト対象：第1戦のページURL
-TEST_URL = "https://www.kanritsuriba.com/at/2026_01/"
+# テスト対象：第21戦（白州トラウトエリア・シルフ）のページURL
+TEST_URL = "https://www.kanritsuriba.com/at/2026_21/"
 TIMEOUT_SEC = 20
 
 
@@ -40,7 +40,7 @@ def send_line_message(text_message):
 
 
 def main():
-    print("第1戦ページの取得・テスト送信を開始します。")
+    print("テスト実行を開始します（実際のページから1件のみ取得して送信）。")
 
     headers = {"User-Agent": "Mozilla/5.0"}
     try:
@@ -53,9 +53,9 @@ def main():
 
         # 第何戦・開催地の抽出
         match_title = re.search(r"第(\d+)戦([^\s大会を]+)", text)
-        round_num = match_title.group(1) if match_title else "1"
+        round_num = match_title.group(1) if match_title else "21"
         location = (
-            match_title.group(2) if match_title else "浜名湖フィッシングリゾート"
+            match_title.group(2) if match_title else "白州トラウトエリア・シルフ"
         )
 
         # エントリー開始日時の抽出
@@ -71,11 +71,11 @@ def main():
             hh, mm = match_entry.group(5), match_entry.group(6)
             entry_str = f"{int(m):02d}/{int(d):02d} {int(hh):02d}:{mm}"
         else:
-            entry_str = "12/16 20:00"
+            entry_str = "08/25 20:00"
 
-        # デザイン変更なし（既存のメッセージフォーマットをそのまま維持）
+        # 本番と同一フォーマットの通知メッセージを作成
         test_msg = (
-            f"🧪【動作テスト通知（第1戦）】\n"
+            f"🧪【動作テスト通知】\n"
             f"実ページ（第{round_num}戦）から自動取得したデータです。\n\n"
             f"【新規大会情報】\n"
             f"第{round_num}戦 {location}大会\n"

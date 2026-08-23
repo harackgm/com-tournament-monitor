@@ -29,32 +29,31 @@ def get_theme_color(location_name):
 
 
 # ==========================================
-# エントリー日時抽出ロジック（正規表現）
+# 厳密版：エントリー日時抽出ロジック（近接検索）
 # ==========================================
 def extract_datetime_from_text(text):
-    pattern = re.search(
-        r"(?:エントリー|受付|募集).*?(?:(\d{1,2})月(\d{1,2})日|(\d{1,2})[/.-](\d{1,2})).*?(\d{1,2}):(\d{2})",
+    # 「(インターネット)エントリー」の直後50文字以内にある「月日」と「時刻」を厳密抽出
+    pattern_strict = re.search(
+        r"(?:インターネットエントリー|エントリー|受付|募集)[^\d\n]{0,50}?(?:(\d{1,2})月(\d{1,2})日|(\d{1,2})[/.-](\d{1,2}))[^\d\n]{0,30}?(\d{1,2}):(\d{2})",
         text,
-        re.DOTALL,
     )
-    if pattern:
-        m = pattern.group(1) or pattern.group(3)
-        d = pattern.group(2) or pattern.group(4)
-        hh = pattern.group(5)
-        mm = pattern.group(6)
+    if pattern_strict:
+        m = pattern_strict.group(1) or pattern_strict.group(3)
+        d = pattern_strict.group(2) or pattern_strict.group(4)
+        hh = pattern_strict.group(5)
+        mm = pattern_strict.group(6)
         return f"{int(m):02d}月{int(d):02d}日 {int(hh):02d}:{mm}"
 
-    # 条件緩和検索
-    pattern_loose = re.search(
-        r"(?:(\d{1,2})月(\d{1,2})日|(\d{1,2})[/.-](\d{1,2})).*?(\d{1,2}):(\d{2})",
+    # フォールバック：文章内で「月日」と「時刻」が20文字以内に近接している箇所を取得
+    pattern_near = re.search(
+        r"(?:(\d{1,2})月(\d{1,2})日|(\d{1,2})[/.-](\d{1,2}))[^\d\n]{0,20}?(\d{1,2}):(\d{2})",
         text,
-        re.DOTALL,
     )
-    if pattern_loose:
-        m = pattern_loose.group(1) or pattern_loose.group(3)
-        d = pattern_loose.group(2) or pattern_loose.group(4)
-        hh = pattern_loose.group(5)
-        mm = pattern_loose.group(6)
+    if pattern_near:
+        m = pattern_near.group(1) or pattern_near.group(3)
+        d = pattern_near.group(2) or pattern_near.group(4)
+        hh = pattern_near.group(5)
+        mm = pattern_near.group(6)
         return f"{int(m):02d}月{int(d):02d}日 {int(hh):02d}:{mm}"
 
     return None
@@ -169,7 +168,7 @@ def send_line_flex_carousel(
 
     try:
         response = requests.post(
-            url, headers=headers, json=payload_bytes if 'payload_bytes' in locals() else flex_payload, timeout=TIMEOUT_SEC
+            url, headers=headers, json=flex_payload, timeout=TIMEOUT_SEC
         )
         if response.status_code != 200:
             print(f"送信失敗詳細 ({response.status_code}): {response.text}")
@@ -193,33 +192,28 @@ def fetch_page_text(url):
 
 
 def main():
-    print("第14戦ページの多重巡回解析を開始します。")
+    print("第14戦ページの抽出修正テストを開始します。")
 
-    # 1. まず本ページ（1ページ目）を取得
-    text_p1 = fetch_page_text(TEST_URL)
+    # 1. 1ページ目（/2/を含む検索）
+    sub_url = TEST_URL.rstrip("/") + "/2/"
+    text_p2 = fetch_page_text(sub_url)
+    entry_str = extract_datetime_from_text(text_p2)
+    final_url = sub_url if entry_str else TEST_URL
 
-    # 第何戦・開催地の抽出
-    match_title = re.search(r"第(\d+)戦([^\s大会を]+)", text_p1)
+    if not entry_str:
+        text_p1 = fetch_page_text(TEST_URL)
+        entry_str = extract_datetime_from_text(text_p1)
+
+    # タイトルと開催地の取得
+    text_for_title = text_p2 if text_p2 else fetch_page_text(TEST_URL)
+    match_title = re.search(r"第(\d+)戦([^\s大会を]+)", text_for_title)
     round_num = match_title.group(1) if match_title else "14"
     location = match_title.group(2) if match_title else "アメイズトラウトエリア"
-
-    # 1ページ目から日時を検索
-    entry_str = extract_datetime_from_text(text_p1)
-
-    # 2. 1ページ目で見つからない場合、2ページ目（/2/）を巡回するフォールバック処理
-    final_url = TEST_URL
-    if not entry_str:
-        print("1ページ目に日時が見つからないため、2ページ目(/2/)を確認します...")
-        sub_url = TEST_URL.rstrip("/") + "/2/"
-        text_p2 = fetch_page_text(sub_url)
-        entry_str = extract_datetime_from_text(text_p2)
-        if entry_str:
-            final_url = sub_url
 
     if not entry_str:
         entry_str = "日時不明"
 
-    # テーマカラー取得
+    # テーマカラー取得（パープル）
     theme_color = get_theme_color(location)
 
     # LINE送信実行

@@ -16,7 +16,7 @@ DB_PATH = "tournaments.db"
 TARGET_YEAR = 2026
 TAG_URL = f"https://www.kanritsuriba.com/at/tag/areatournament{TARGET_YEAR}/"
 MAX_NOTIFY_LIMIT = 5  # 大量通知ストッパー（5件を超えた場合は自動送信ストップ）
-TIMEOUT_SEC = 20
+TIMEOUT_SEC = 15  # 通信タイムアウト時間（15秒）
 
 # --- 大会前日リマインドの通知時間帯指定 (前夜19時〜23時の間：直前判定・遅延吸収用) ---
 EVENT_1D_HOUR_START = 19  # 送信開始時刻（19時）
@@ -36,10 +36,12 @@ LOCATION_COORDS = {
 
 
 # ==========================================
-# ネットワーク接続ヘルパー
+# 強化版 ネットワーク接続ヘルパー (自動リトライ＆ウェイト)
 # ==========================================
-def fetch_url(url, retries=3):
-    headers = {"User-Agent": "Mozilla/5.0"}
+def fetch_url(url, retries=5):
+    headers = {
+        "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36"
+    }
     for i in range(retries):
         try:
             res = requests.get(url, headers=headers, timeout=TIMEOUT_SEC)
@@ -47,8 +49,15 @@ def fetch_url(url, retries=3):
             return res
         except Exception as e:
             if i == retries - 1:
-                raise e
-            time.sleep(3)
+                print(
+                    f"⚠️ 接続失敗 (上限到達 {retries}回): {url} -> {e}"
+                )
+                return None
+            wait_time = (i + 1) * 3  # 3秒, 6秒, 9秒... と段階的に待機を延ばす
+            print(
+                f"💡 リトライ待ち ({i+1}/{retries}回目, {wait_time}秒後): {url}"
+            )
+            time.sleep(wait_time)
 
 
 # ==========================================
@@ -496,13 +505,15 @@ def send_simple_text(text_message):
 
 
 def fetch_page_text(url):
-    try:
-        res = fetch_url(url)
-        soup = BeautifulSoup(res.text, "html.parser")
-        content_area = soup.find("div", class_="entry-content") or soup
-        return content_area.get_text(strip=True)
-    except Exception:
-        return ""
+    res = fetch_url(url)
+    if res and res.status_code == 200:
+        try:
+            soup = BeautifulSoup(res.text, "html.parser")
+            content_area = soup.find("div", class_="entry-content") or soup
+            return content_area.get_text(strip=True)
+        except Exception:
+            pass
+    return ""
 
 
 # ==========================================
@@ -510,7 +521,7 @@ def fetch_page_text(url):
 # ==========================================
 def main():
     print(
-        f"[{datetime.now().strftime('%Y-%m-%d %H:%M:%S')}] 全自動監視処理（前夜23時対応版）を開始します。"
+        f"[{datetime.now().strftime('%Y-%m-%d %H:%M:%S')}] 全自動監視処理を開始します。"
     )
     conn, is_initial_setup = init_db()
     c = conn.cursor()
@@ -523,10 +534,16 @@ def main():
     notify_queue = []
     db_updates = []
 
-    try:
-        res = fetch_url(TAG_URL)
-        soup = BeautifulSoup(res.text, "html.parser")
+    res = fetch_url(TAG_URL)
+    if not res:
+        print(
+            "⚠️ 一覧ページの取得に失敗したため、今回の巡回処理を安全にスキップ（次回へ繰り越し）します。"
+        )
+        conn.close()
+        return
 
+    try:
+        soup = BeautifulSoup(res.text, "html.parser")
         links = soup.find_all("a", href=re.compile(r"/at/2026_\d+/"))
         urls_to_check = list(
             set(
@@ -541,16 +558,22 @@ def main():
             )
         )
     except Exception as e:
-        print(f"一覧取得エラー: {e}")
+        print(f"一覧解析エラー: {e}")
+        conn.close()
         return
 
     now = datetime.now()
 
     for url in urls_to_check:
         try:
+            # サーバー負担軽減のため、ページ取得間に0.5秒のウェイトを挿入
+            time.sleep(0.5)
             text_p1 = fetch_page_text(url)
+
             sub_url = url.rstrip("/") + "/2/"
+            time.sleep(0.5)
             text_p2 = fetch_page_text(sub_url)
+
             combined_text = (text_p2 + " " + text_p1).strip()
 
             if not combined_text:
@@ -572,7 +595,6 @@ def main():
             fee = extract_fee(combined_text)
             theme_color = get_theme_color(location)
 
-            # キャンセル判定キーワードの網羅性強化
             cancel_keywords = ["見送る", "中止", "延期", "順延", "取りやめ", "開催を見送"]
             is_cancelled = (
                 1

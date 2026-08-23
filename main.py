@@ -18,9 +18,9 @@ TAG_URL = f"https://www.kanritsuriba.com/at/tag/areatournament{TARGET_YEAR}/"
 MAX_NOTIFY_LIMIT = 5  # 大量通知ストッパー（5件を超えた場合は自動送信ストップ）
 TIMEOUT_SEC = 20
 
-# --- 大会前日リマインドの通知時間帯指定 (前夜19時〜21時の間) ---
+# --- 大会前日リマインドの通知時間帯指定 (前夜19時〜23時の間：直前判定・遅延吸収用) ---
 EVENT_1D_HOUR_START = 19  # 送信開始時刻（19時）
-EVENT_1D_HOUR_END = 21  # 送信終了時刻（21時）
+EVENT_1D_HOUR_END = 23  # 送信終了時刻（23時まで拡大）
 
 # 主要釣り場の座標マッピング（天気API用）
 LOCATION_COORDS = {
@@ -55,7 +55,6 @@ def fetch_url(url, retries=3):
 # 天気自動取得＆アドバイス生成ロジック（Open-Meteo API）
 # ==========================================
 def get_weather_advice(location_name):
-    # デフォルトの座標（関東標準）
     lat, lon = 36.5, 139.8
     for name, coords in LOCATION_COORDS.items():
         if name in location_name:
@@ -67,7 +66,6 @@ def get_weather_advice(location_name):
         res = requests.get(api_url, timeout=5)
         if res.status_code == 200:
             data = res.json()
-            # 翌日の天気データ（index 1）
             max_temp = data["daily"]["temperature_2m_max"][1]
             precip = data["daily"]["precipitation_sum"][1]
             w_code = data["daily"]["weathercode"][1]
@@ -512,7 +510,7 @@ def fetch_page_text(url):
 # ==========================================
 def main():
     print(
-        f"[{datetime.now().strftime('%Y-%m-%d %H:%M:%S')}] 全自動監視処理（天気予報・応援メッセージ機能付き）を開始します。"
+        f"[{datetime.now().strftime('%Y-%m-%d %H:%M:%S')}] 全自動監視処理（前夜23時対応版）を開始します。"
     )
     conn, is_initial_setup = init_db()
     c = conn.cursor()
@@ -574,7 +572,8 @@ def main():
             fee = extract_fee(combined_text)
             theme_color = get_theme_color(location)
 
-            cancel_keywords = ["見送る", "中止", "延期", "開催を見送"]
+            # キャンセル判定キーワードの網羅性強化
+            cancel_keywords = ["見送る", "中止", "延期", "順延", "取りやめ", "開催を見送"]
             is_cancelled = (
                 1
                 if any(kw in combined_text for kw in cancel_keywords)
@@ -764,7 +763,7 @@ def main():
                             )
                         )
 
-                # ④ 大会前日リマインド（前夜19:00〜21:00・天気＋応援文付き）
+                # ④ 大会前日リマインド（前夜19:00〜23:00の間に限定して通知）
                 if event_dt and is_cancelled == 0:
                     is_day_before = (
                         now.date() == (event_dt.date() - timedelta(days=1))
@@ -774,7 +773,6 @@ def main():
                     )
 
                     if is_day_before and is_in_target_hours and not n_event_1d:
-                        # ピンポイント天気＋アドバイス・応援メッセージの取得
                         weather_advice = get_weather_advice(db_loc)
 
                         notify_queue.append({

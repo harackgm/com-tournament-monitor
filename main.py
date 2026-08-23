@@ -17,23 +17,99 @@ TARGET_YEAR = 2026
 
 
 # ==========================================
-# 都道府県・細分化テーマカラー判定ロジック
+# 指定都道府県グループ別テーマカラー判定ロジック
 # ==========================================
 def get_theme_color(location_name):
-    if any(kw in location_name for kw in ["栃木", "キングフィッシャー", "上永野", "みどり", "なら山", "大芦", "増井", "宇都宮", "アメイズ"]):
-        return "#03A9F4"  # 🔵 ライトブルー（栃木エリア）
-    elif any(kw in location_name for kw in ["群馬", "中之沢", "赤城", "川場", "沼田", "宮城", "ベリーズ", "イワナ"]):
-        return "#E91E63"  # 🩷 ローズピンク（群馬エリア）
-    elif any(kw in location_name for kw in ["静岡", "浜名湖", "東山湖", "すその", "柿田川"]):
+    # 1. 栃木・群馬エリア
+    if any(
+        kw in location_name
+        for kw in [
+            "栃木",
+            "群馬",
+            "キングフィッシャー",
+            "上永野",
+            "みどり",
+            "なら山",
+            "大芦",
+            "増井",
+            "宇都宮",
+            "アメイズ",
+            "中之沢",
+            "赤城",
+            "川場",
+            "沼田",
+            "宮城",
+            "ベリーズ",
+            "イワナ",
+        ]
+    ):
+        return "#03A9F4"  # 🔵 ライトブルー（栃木・群馬エリア）
+
+    # 2. 千葉・茨城エリア
+    elif any(
+        kw in location_name
+        for kw in [
+            "千葉",
+            "茨城",
+            "ジョイバレー",
+            "けんた",
+            "千葉川すそ",
+            "座間",
+            "高萩",
+            "エリアJ",
+        ]
+    ):
+        return "#FF5722"  # 🟧 レッドオレンジ（千葉・茨城エリア）
+
+    # 3. 埼玉エリア
+    elif any(
+        kw in location_name
+        for kw in ["埼玉", "朝霞", "吉羽園", "しらこばと", "川越"]
+    ):
+        return "#E91E63"  # 🩷 ローズピンク（埼玉エリア）
+
+    # 4. 神奈川エリア
+    elif any(
+        kw in location_name
+        for kw in ["神奈川", "上浜", "王禅寺", "開成", "足柄", "ベリーパーク"]
+    ):
+        return "#9C27B0"  # 🟪 ディープパープル（神奈川エリア）
+
+    # 5. 東京エリア
+    elif any(kw in location_name for kw in ["東京", "浅川", "秋川"]):
+        return "#3F51B5"  # 🔷 インディゴブルー（東京エリア）
+
+    # 6. 静岡エリア（そのまま）
+    elif any(
+        kw in location_name
+        for kw in ["静岡", "浜名湖", "東山湖", "すその", "柿田川"]
+    ):
         return "#FF9800"  # 🟠 オレンジ（静岡エリア）
-    elif any(kw in location_name for kw in ["山梨", "長野", "白州", "シルフ", "竜華池", "鹿島槍"]):
+
+    # 7. 山梨・長野エリア（そのまま）
+    elif any(
+        kw in location_name
+        for kw in ["山梨", "長野", "白州", "シルフ", "竜華池", "鹿島槍"]
+    ):
         return "#4CAF50"  # 🟢 グリーン（山梨・長野エリア）
-    elif any(kw in location_name for kw in ["千葉", "ジョイバレー", "けんた", "千葉川すそ"]):
-        return "#FF5722"  # 🟧 レッドオレンジ（千葉エリア）
-    elif any(kw in location_name for kw in ["三重", "岐阜", "滋賀", "サンクチュアリ", "サンク", "瑞浪", "平谷", "醒井"]):
+
+    # 8. 中京・近畿エリア（そのまま）
+    elif any(
+        kw in location_name
+        for kw in [
+            "三重",
+            "岐阜",
+            "滋賀",
+            "サンクチュアリ",
+            "サンク",
+            "瑞浪",
+            "平谷",
+            "醒井",
+        ]
+    ):
         return "#009688"  # 翡翠色/ティール（中京・近畿エリア）
-    elif any(kw in location_name for kw in ["茨城", "埼玉", "神奈川", "座間", "高萩", "上浜", "エリアJ"]):
-        return "#9C27B0"  # 🟪 パープル（茨城・埼玉・神奈川エリア）
+
+    # 9. その他エリア（そのまま）
     else:
         return "#607D8B"  # 🩶 ブルーグレー（その他エリア）
 
@@ -251,7 +327,9 @@ def send_line_carousel_batch(card_bubbles):
 
 
 def main():
-    print("2026年全大会のデータ取得・一括テスト送信を開始します。")
+    print(
+        "2026年全大会のデータ取得・一括テスト送信（地域グループ再編版）を開始します。"
+    )
 
     headers = {"User-Agent": "Mozilla/5.0"}
     try:

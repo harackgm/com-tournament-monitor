@@ -72,7 +72,7 @@ def extract_datetime_from_text(text):
 
 
 # ==========================================
-# LINE Push Message (文字サイズ調整版 Flex Message)
+# LINE Push Message (文字サイズ xl ・太字解除版)
 # ==========================================
 def send_line_flex_carousel(
     round_num, location, event_date_str, entry_str, page_url, theme_color
@@ -121,19 +121,19 @@ def send_line_flex_carousel(
                                         "type": "text",
                                         "text": f"第{round_num}戦",
                                         "weight": "bold",
-                                        "size": "xl",  # 変更なし
+                                        "size": "xl",
                                         "color": "#333333",
                                     },
                                     {
                                         "type": "text",
                                         "text": f"{location}大会",
                                         "weight": "bold",
-                                        "size": "md",  # 変更なし
+                                        "size": "md",
                                         "color": "#555555",
                                         "wrap": True,
                                     },
                                     {"type": "separator"},
-                                    # --- 大会開催日（文字サイズ拡大: lg） ---
+                                    # --- 大会開催日（サイズ: xl, 太字解除） ---
                                     {
                                         "type": "box",
                                         "layout": "vertical",
@@ -148,13 +148,12 @@ def send_line_flex_carousel(
                                             {
                                                 "type": "text",
                                                 "text": event_date_str,
-                                                "size": "lg",  # sm -> lg へ拡大
-                                                "weight": "bold",
-                                                "color": "#333333",
+                                                "size": "xl",  # lg -> xl へ1段階拡大
+                                                "color": "#333333",  # 太字(bold)を解除
                                             },
                                         ],
                                     },
-                                    # --- エントリー開始日時（文字サイズ拡大: lg） ---
+                                    # --- エントリー開始日時（サイズ: xl, 太字解除） ---
                                     {
                                         "type": "box",
                                         "layout": "vertical",
@@ -169,9 +168,8 @@ def send_line_flex_carousel(
                                             {
                                                 "type": "text",
                                                 "text": entry_str,
-                                                "size": "lg",  # sm -> lg へ拡大
-                                                "weight": "bold",
-                                                "color": "#E53935",
+                                                "size": "xl",  # lg -> xl へ1段階拡大
+                                                "color": "#E53935",  # 太字(bold)を解除
                                             },
                                         ],
                                     },
@@ -207,7 +205,7 @@ def send_line_flex_carousel(
         if response.status_code != 200:
             print(f"送信失敗詳細 ({response.status_code}): {response.text}")
         response.raise_for_status()
-        print("文字拡大版カルーセルメッセージの送信に成功しました。")
+        print("文字サイズ再調整版メッセージの送信に成功しました。")
     except Exception as e:
         print(f"送信エラー: {e}")
 
@@ -226,7 +224,7 @@ def fetch_page_text(url):
 
 
 def main():
-    print("文字サイズ拡大テストを開始します。")
+    print("文字サイズ再調整テストを開始します。")
 
     sub_url = TEST_URL.rstrip("/") + "/2/"
     text_p2 = fetch_page_text(sub_url)

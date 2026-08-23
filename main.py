@@ -4,19 +4,21 @@ import requests
 from bs4 import BeautifulSoup
 
 # ==========================================
-# 安全制御・環境変数設定
+# 環境変数からLINE接続情報を取得
 # ==========================================
 LINE_CHANNEL_ACCESS_TOKEN = os.environ.get("LINE_CHANNEL_ACCESS_TOKEN", "")
 LINE_USER_ID = os.environ.get("LINE_USER_ID", "")
 
-# テスト対象：第1戦のページURL
 TEST_URL = "https://www.kanritsuriba.com/at/2026_01/"
 TIMEOUT_SEC = 20
 
 
-def send_line_message(text_message):
+# ==========================================
+# LINE Push Message (Flex Message カルーセル送信)
+# ==========================================
+def send_line_flex_carousel(round_num, location, entry_str, page_url):
     if not LINE_CHANNEL_ACCESS_TOKEN or not LINE_USER_ID:
-        print("エラー: LINE_CHANNEL_ACCESS_TOKEN または LINE_USER_ID が未設定です。")
+        print("エラー: LINE接続情報が未設定です。")
         return
 
     url = "https://api.line.me/v2/bot/message/push"
@@ -24,23 +26,114 @@ def send_line_message(text_message):
         "Content-Type": "application/json",
         "Authorization": f"Bearer {LINE_CHANNEL_ACCESS_TOKEN}",
     }
-    payload = {
+
+    # Flex Message (カルーセル形式) のJSON構造
+    flex_payload = {
         "to": LINE_USER_ID,
-        "messages": [{"type": "text", "text": text_message}],
+        "messages": [
+            {
+                "type": "flex",
+                "altText": f"【新規大会情報】第{round_num}戦 {location}大会",
+                "contents": {
+                    "type": "carousel",
+                    "contents": [
+                        {
+                            "type": "bubble",
+                            "size": "medium",
+                            "header": {
+                                "type": "box",
+                                "layout": "vertical",
+                                "backgroundColor": "#03A9F4",
+                                "paddingAll": "12px",
+                                "contents": [
+                                    {
+                                        "type": "text",
+                                        "text": "🎣 エリアトーナメント2026",
+                                        "color": "#FFFFFF",
+                                        "weight": "bold",
+                                        "size": "xs",
+                                    }
+                                ],
+                            },
+                            "body": {
+                                "type": "box",
+                                "layout": "vertical",
+                                "spacing": "md",
+                                "contents": [
+                                    {
+                                        "type": "text",
+                                        "text": f"第{round_num}戦",
+                                        "weight": "bold",
+                                        "size": "xl",
+                                        "color": "#333333",
+                                    },
+                                    {
+                                        "type": "text",
+                                        "text": f"{location}大会",
+                                        "weight": "bold",
+                                        "size": "md",
+                                        "color": "#555555",
+                                        "wrap": True,
+                                    },
+                                    {"type": "separator"},
+                                    {
+                                        "type": "box",
+                                        "layout": "vertical",
+                                        "spacing": "xs",
+                                        "contents": [
+                                            {
+                                                "type": "text",
+                                                "text": "⏰ エントリー開始日時",
+                                                "size": "xs",
+                                                "color": "#888888",
+                                            },
+                                            {
+                                                "type": "text",
+                                                "text": entry_str,
+                                                "size": "sm",
+                                                "weight": "bold",
+                                                "color": "#E53935",
+                                            },
+                                        ],
+                                    },
+                                ],
+                            },
+                            "footer": {
+                                "type": "box",
+                                "layout": "vertical",
+                                "contents": [
+                                    {
+                                        "type": "button",
+                                        "action": {
+                                            "type": "uri",
+                                            "label": "🔗 大会詳細・エントリー",
+                                            "uri": page_url,
+                                        },
+                                        "style": "primary",
+                                        "color": "#03A9F4",
+                                        "height": "sm",
+                                    }
+                                ],
+                            },
+                        }
+                    ],
+                },
+            }
+        ],
     }
 
     try:
         response = requests.post(
-            url, headers=headers, json=payload, timeout=TIMEOUT_SEC
+            url, headers=headers, json=flex_payload, timeout=TIMEOUT_SEC
         )
         response.raise_for_status()
-        print("LINEへのテスト送信に成功しました。")
+        print("カルーセルメッセージの送信に成功しました。")
     except Exception as e:
-        print(f"LINE送信エラー: {e}")
+        print(f"送信エラー: {e}")
 
 
 def main():
-    print("デザイン確認用：第1戦データの取得とテスト送信を行います。")
+    print("カルーセル表示の動作テストを開始します。")
 
     headers = {"User-Agent": "Mozilla/5.0"}
     try:
@@ -51,14 +144,12 @@ def main():
         content_area = soup.find("div", class_="entry-content") or soup
         text = content_area.get_text(strip=True)
 
-        # 第何戦・開催地の抽出
         match_title = re.search(r"第(\d+)戦([^\s大会を]+)", text)
         round_num = match_title.group(1) if match_title else "1"
         location = (
             match_title.group(2) if match_title else "浜名湖フィッシングリゾート"
         )
 
-        # エントリー開始日時の抽出
         match_entry = re.search(
             r"(?:エントリー).*?(?:(\d{1,2})月(\d{1,2})日|(\d{1,2})/(\d{1,2})).*?(\d{1,2}):(\d{2})",
             text,
@@ -69,26 +160,15 @@ def main():
             else:
                 m, d = match_entry.group(3), match_entry.group(4)
             hh, mm = match_entry.group(5), match_entry.group(6)
-            entry_str = f"{int(m):02d}/{int(d):02d} {int(hh):02d}:{mm}"
+            entry_str = f"{int(m):02d}月{int(d):02d}日 {int(hh):02d}:{mm}"
         else:
-            entry_str = "12/16 20:00"
+            entry_str = "12月16日 20:00"
 
-        # --------------------------------------------------
-        # 【通知デザイン設定エリア】指示通り変更なし
-        # --------------------------------------------------
-        message_design = (
-            f"🧪【動作テスト通知】\n"
-            f"実ページ（第{round_num}戦）から自動取得したデータです。\n\n"
-            f"【新規大会情報】\n"
-            f"第{round_num}戦 {location}大会\n"
-            f"エントリー開始: {entry_str}\n"
-            f"URL: {TEST_URL}"
-        )
-
-        send_line_message(message_design)
+        # カルーセル形式でLINEへ送信
+        send_line_flex_carousel(round_num, location, entry_str, TEST_URL)
 
     except Exception as e:
-        print(f"デザインテスト送信エラー: {e}")
+        print(f"テスト実行エラー: {e}")
 
 
 if __name__ == "__main__":

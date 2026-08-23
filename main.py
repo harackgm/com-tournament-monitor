@@ -1,6 +1,7 @@
 import os
 import re
 import time
+from datetime import datetime
 import requests
 from bs4 import BeautifulSoup
 
@@ -16,57 +17,76 @@ TARGET_YEAR = 2026
 
 
 # ==========================================
-# 地域別のテーマカラー判定ロジック
+# 都道府県・細分化テーマカラー判定ロジック
 # ==========================================
 def get_theme_color(location_name):
-    if any(kw in location_name for kw in ["浜名湖", "東海", "静岡"]):
-        return "#FF9800"  # 🟠 オレンジ（静岡・東海エリア）
-    elif any(kw in location_name for kw in ["白州", "山梨", "長野", "甲信越"]):
-        return "#4CAF50"  # 🟢 グリーン（山梨・甲信越エリア）
-    elif any(kw in location_name for kw in ["キングフィッシャー", "東山湖", "関東", "栃木"]):
-        return "#03A9F4"  # 🔵 ブルー（関東エリア）
+    if any(kw in location_name for kw in ["栃木", "キングフィッシャー", "上永野", "みどり", "なら山", "大芦", "増井", "宇都宮", "アメイズ"]):
+        return "#03A9F4"  # 🔵 ライトブルー（栃木エリア）
+    elif any(kw in location_name for kw in ["群馬", "中之沢", "赤城", "川場", "沼田", "宮城", "ベリーズ", "イワナ"]):
+        return "#E91E63"  # 🩷 ローズピンク（群馬エリア）
+    elif any(kw in location_name for kw in ["静岡", "浜名湖", "東山湖", "すその", "柿田川"]):
+        return "#FF9800"  # 🟠 オレンジ（静岡エリア）
+    elif any(kw in location_name for kw in ["山梨", "長野", "白州", "シルフ", "竜華池", "鹿島槍"]):
+        return "#4CAF50"  # 🟢 グリーン（山梨・長野エリア）
+    elif any(kw in location_name for kw in ["千葉", "ジョイバレー", "けんた", "千葉川すそ"]):
+        return "#FF5722"  # 🟧 レッドオレンジ（千葉エリア）
+    elif any(kw in location_name for kw in ["三重", "岐阜", "滋賀", "サンクチュアリ", "サンク", "瑞浪", "平谷", "醒井"]):
+        return "#009688"  # 翡翠色/ティール（中京・近畿エリア）
+    elif any(kw in location_name for kw in ["茨城", "埼玉", "神奈川", "座間", "高萩", "上浜", "エリアJ"]):
+        return "#9C27B0"  # 🟪 パープル（茨城・埼玉・神奈川エリア）
     else:
-        return "#9C27B0"  # 🟣 パープル（その他・未登録エリア）
+        return "#607D8B"  # 🩶 ブルーグレー（その他エリア）
 
 
 # ==========================================
-# 大会開催日の抽出ロジック
+# 大会開催日の抽出ロジック（曜日付き）
 # ==========================================
 def extract_event_date_str(text, year=TARGET_YEAR):
     match = re.search(r"(?:(\d{4})年)?\s*(\d{1,2})月(\d{1,2})日", text)
     if match:
-        y = match.group(1) if match.group(1) else str(year)
+        y = int(match.group(1)) if match.group(1) else year
         m = int(match.group(2))
         d = int(match.group(3))
-        return f"{y}年{m:02d}月{d:02d}日"
+        try:
+            dt = datetime(y, m, d)
+            w = ["月", "火", "水", "木", "金", "土", "日"][dt.weekday()]
+            return f"{y}年{m:02d}月{d:02d}日({w})"
+        except ValueError:
+            return f"{y}年{m:02d}月{d:02d}日"
     return "開催日不明"
 
 
 # ==========================================
-# エントリー開始日時の抽出ロジック
+# エントリー開始日時の抽出ロジック（曜日付き）
 # ==========================================
-def extract_datetime_from_text(text):
+def extract_datetime_from_text(text, year=TARGET_YEAR):
+    weekdays = ["月", "火", "水", "木", "金", "土", "日"]
+
     pattern_strict = re.search(
         r"(?:インターネットエントリー|エントリー|受付|募集)[^\d\n]{0,50}?(?:(\d{1,2})月(\d{1,2})日|(\d{1,2})[/.-](\d{1,2}))[^\d\n]{0,30}?(\d{1,2}):(\d{2})",
         text,
     )
-    if pattern_strict:
-        m = pattern_strict.group(1) or pattern_strict.group(3)
-        d = pattern_strict.group(2) or pattern_strict.group(4)
-        hh = pattern_strict.group(5)
-        mm = pattern_strict.group(6)
-        return f"{int(m):02d}月{int(d):02d}日 {int(hh):02d}:{mm}"
+    pattern = pattern_strict
 
-    pattern_near = re.search(
-        r"(?:(\d{1,2})月(\d{1,2})日|(\d{1,2})[/.-](\d{1,2}))[^\d\n]{0,20}?(\d{1,2}):(\d{2})",
-        text,
-    )
-    if pattern_near:
-        m = pattern_near.group(1) or pattern_near.group(3)
-        d = pattern_near.group(2) or pattern_near.group(4)
-        hh = pattern_near.group(5)
-        mm = pattern_near.group(6)
-        return f"{int(m):02d}月{int(d):02d}日 {int(hh):02d}:{mm}"
+    if not pattern:
+        pattern = re.search(
+            r"(?:(\d{1,2})月(\d{1,2})日|(\d{1,2})[/.-](\d{1,2}))[^\d\n]{0,20}?(\d{1,2}):(\d{2})",
+            text,
+        )
+
+    if pattern:
+        m = int(pattern.group(1) or pattern.group(3))
+        d = int(pattern.group(2) or pattern.group(4))
+        hh = int(pattern.group(5))
+        mm = int(pattern.group(6))
+
+        entry_year = year - 1 if m >= 11 else year
+        try:
+            dt = datetime(entry_year, m, d, hh, mm)
+            w = weekdays[dt.weekday()]
+            return f"{m:02d}月{d:02d}日({w}) {hh:02d}:{mm:02d}"
+        except ValueError:
+            return f"{m:02d}月{d:02d}日 {hh:02d}:{mm:02d}"
 
     return None
 
@@ -200,7 +220,6 @@ def send_line_carousel_batch(card_bubbles):
         "Authorization": f"Bearer {LINE_CHANNEL_ACCESS_TOKEN}",
     }
 
-    # LINE Flex Carouselの上限は1通あたり10カードまで
     chunk_size = 10
     for i in range(0, len(card_bubbles), chunk_size):
         chunk = card_bubbles[i : i + chunk_size]
@@ -226,7 +245,7 @@ def send_line_carousel_batch(card_bubbles):
                 )
             response.raise_for_status()
             print(f"カルーセル送信成功: {i+1}〜{i+len(chunk)}件目のカード")
-            time.sleep(1)  # 送信インターバル
+            time.sleep(1)
         except Exception as e:
             print(f"送信エラー: {e}")
 
@@ -257,7 +276,6 @@ def main():
         print(f"一覧ページ取得エラー: {e}")
         return
 
-    # 第何戦の数字順でソート
     def get_round_number(u):
         m = re.search(r"2026_(\d+)", u)
         return int(m.group(1)) if m else 999
@@ -295,7 +313,6 @@ def main():
             final_url = sub_url if extract_datetime_from_text(text_p2) else url
             theme_color = get_theme_color(location)
 
-            # バブルを作成して追加
             bubble = create_card_bubble(
                 round_num,
                 location,
@@ -310,7 +327,6 @@ def main():
         except Exception as e:
             print(f"解析失敗 ({url}): {e}")
 
-    # LINEへ一括送信（10カードずつカルーセル化）
     if all_card_bubbles:
         print(
             f"合計 {len(all_card_bubbles)} 件の大会データを取得しました。LINE送信を行います。"

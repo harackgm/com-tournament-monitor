@@ -40,33 +40,43 @@ def fetch_url(url, retries=3):
 
 
 # ==========================================
-# 1. データベース初期化
+# 1. データベース初期化（自動構造更新機能付き）
 # ==========================================
 def init_db():
-    is_initial_setup = not os.path.exists(DB_PATH)
     conn = sqlite3.connect(DB_PATH)
     c = conn.cursor()
-    c.execute("""
-        CREATE TABLE IF NOT EXISTS tournaments (
-            url TEXT PRIMARY KEY,
-            round_num TEXT,
-            location TEXT,
-            event_date TEXT,
-            event_datetime DATETIME,
-            entry_datetime DATETIME,
-            entry_str TEXT,
-            reception_time TEXT,
-            fee TEXT,
-            original_text TEXT,
-            is_cancelled INTEGER,
-            notified_new INTEGER,
-            notified_1d INTEGER,
-            notified_1h INTEGER,
-            notified_15m INTEGER,
-            notified_event_1d INTEGER
-        )
-    """)
-    conn.commit()
+
+    # 既存テーブルのカラム情報チェック
+    c.execute("PRAGMA table_info(tournaments)")
+    columns = c.fetchall()
+
+    # テーブルが存在しない、またはカラム数が16未満（古い形式）の場合
+    is_initial_setup = False
+    if not columns or len(columns) < 16:
+        is_initial_setup = True
+        c.execute("DROP TABLE IF EXISTS tournaments")
+        c.execute("""
+            CREATE TABLE tournaments (
+                url TEXT PRIMARY KEY,
+                round_num TEXT,
+                location TEXT,
+                event_date TEXT,
+                event_datetime DATETIME,
+                entry_datetime DATETIME,
+                entry_str TEXT,
+                reception_time TEXT,
+                fee TEXT,
+                original_text TEXT,
+                is_cancelled INTEGER,
+                notified_new INTEGER,
+                notified_1d INTEGER,
+                notified_1h INTEGER,
+                notified_15m INTEGER,
+                notified_event_1d INTEGER
+            )
+        """)
+        conn.commit()
+
     return conn, is_initial_setup
 
 
@@ -426,7 +436,7 @@ def main():
 
     if is_initial_setup:
         print(
-            "【安全装置発動】初回DB構築のため、全件既読化（LINE通知スキップ）を行います。"
+            "【安全装置発動】DB構造を最新に更新したため、全件既読化（LINE通知スキップ）を行います。"
         )
 
     notify_queue = []

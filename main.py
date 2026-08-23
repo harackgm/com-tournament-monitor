@@ -22,6 +22,18 @@ TIMEOUT_SEC = 20
 EVENT_1D_HOUR_START = 19  # 送信開始時刻（19時）
 EVENT_1D_HOUR_END = 21  # 送信終了時刻（21時）
 
+# 主要釣り場の座標マッピング（天気API用）
+LOCATION_COORDS = {
+    "サンクチュアリ": (35.15, 136.52),
+    "浜名湖": (34.72, 137.60),
+    "東山湖": (35.28, 138.95),
+    "キングフィッシャー": (36.80, 140.02),
+    "赤城山": (36.48, 139.18),
+    "中之沢": (36.52, 139.18),
+    "白州": (35.80, 138.31),
+    "上浜": (39.51, 139.95),
+}
+
 
 # ==========================================
 # ネットワーク接続ヘルパー
@@ -40,17 +52,65 @@ def fetch_url(url, retries=3):
 
 
 # ==========================================
-# 1. データベース初期化（自動構造更新機能付き）
+# 天気自動取得＆アドバイス生成ロジック（Open-Meteo API）
+# ==========================================
+def get_weather_advice(location_name):
+    # デフォルトの座標（関東標準）
+    lat, lon = 36.5, 139.8
+    for name, coords in LOCATION_COORDS.items():
+        if name in location_name:
+            lat, lon = coords
+            break
+
+    try:
+        api_url = f"https://api.open-meteo.com/v1/forecast?latitude={lat}&longitude={lon}&daily=weathercode,temperature_2m_max,precipitation_sum&timezone=Asia%2FTokyo"
+        res = requests.get(api_url, timeout=5)
+        if res.status_code == 200:
+            data = res.json()
+            # 翌日の天気データ（index 1）
+            max_temp = data["daily"]["temperature_2m_max"][1]
+            precip = data["daily"]["precipitation_sum"][1]
+            w_code = data["daily"]["weathercode"][1]
+
+            advice = ""
+            if w_code in [
+                51,
+                53,
+                55,
+                61,
+                63,
+                65,
+                80,
+                81,
+                82,
+                95,
+                96,
+                99,
+            ] or (precip > 1.0):
+                advice = "🌧 雨の予報です。レインウェアと防水対策をお忘れなく！"
+            elif max_temp >= 30:
+                advice = f"☀️ 最高気温{int(max_temp)}℃の猛暑予報です。熱中症対策と水分補給を万全に！"
+            elif max_temp <= 10:
+                advice = f"❄️ 最高気温{int(max_temp)}℃の冷え込み予報です。十分な防寒対策をして挑みましょう！"
+            else:
+                advice = f"🌤 予想最高気温は{int(max_temp)}℃です。絶好のコンディションで大会に臨みましょう！"
+
+            return f"{advice}\n🔥 日頃の練習の成果を発揮し、優勝を目指して全力を尽くしてください！応援しています！"
+    except Exception:
+        pass
+
+    return "🎣 体調管理を万全にして大会に挑みましょう！日頃の練習成果を発揮して優勝目指してファイトです！"
+
+
+# ==========================================
+# 1. データベース初期化
 # ==========================================
 def init_db():
     conn = sqlite3.connect(DB_PATH)
     c = conn.cursor()
-
-    # 既存テーブルのカラム情報チェック
     c.execute("PRAGMA table_info(tournaments)")
     columns = c.fetchall()
 
-    # テーブルが存在しない、またはカラム数が16未満（古い形式）の場合
     is_initial_setup = False
     if not columns or len(columns) < 16:
         is_initial_setup = True
@@ -325,6 +385,29 @@ def send_line_flex(
             ],
         })
 
+        if "weather_advice" in extra_info:
+            body_contents.append({"type": "separator"})
+            body_contents.append({
+                "type": "box",
+                "layout": "vertical",
+                "spacing": "xs",
+                "contents": [
+                    {
+                        "type": "text",
+                        "text": "🌤 明日の天候・応援",
+                        "size": "xs",
+                        "color": "#888888",
+                    },
+                    {
+                        "type": "text",
+                        "text": extra_info["weather_advice"],
+                        "size": "sm",
+                        "color": "#333333",
+                        "wrap": True,
+                    },
+                ],
+            })
+
     flex_payload = {
         "to": LINE_USER_ID,
         "messages": [
@@ -429,7 +512,7 @@ def fetch_page_text(url):
 # ==========================================
 def main():
     print(
-        f"[{datetime.now().strftime('%Y-%m-%d %H:%M:%S')}] 監視処理を開始します。"
+        f"[{datetime.now().strftime('%Y-%m-%d %H:%M:%S')}] 全自動監視処理（天気予報・応援メッセージ機能付き）を開始します。"
     )
     conn, is_initial_setup = init_db()
     c = conn.cursor()
@@ -681,7 +764,7 @@ def main():
                             )
                         )
 
-                # ④ 大会前日リマインド（前夜19:00〜21:00の間に限定して通知）
+                # ④ 大会前日リマインド（前夜19:00〜21:00・天気＋応援文付き）
                 if event_dt and is_cancelled == 0:
                     is_day_before = (
                         now.date() == (event_dt.date() - timedelta(days=1))
@@ -691,6 +774,9 @@ def main():
                     )
 
                     if is_day_before and is_in_target_hours and not n_event_1d:
+                        # ピンポイント天気＋アドバイス・応援メッセージの取得
+                        weather_advice = get_weather_advice(db_loc)
+
                         notify_queue.append({
                             "header": "📅【明日大会開催！直前案内】",
                             "round_num": db_round,
@@ -702,6 +788,7 @@ def main():
                             "extra_info": {
                                 "reception": reception_time,
                                 "fee": fee,
+                                "weather_advice": weather_advice,
                             },
                         })
                         db_updates.append(
@@ -741,7 +828,7 @@ def main():
 
     conn.commit()
     conn.close()
-    print("監視処理が正常完了しました。")
+    print("全自動監視処理が正常完了しました。")
 
 
 if __name__ == "__main__":

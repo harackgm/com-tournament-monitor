@@ -4,7 +4,7 @@ import requests
 from bs4 import BeautifulSoup
 
 # ==========================================
-# 環境変数からLINE接続情報を取得
+# 安全制御・環境変数設定
 # ==========================================
 LINE_CHANNEL_ACCESS_TOKEN = os.environ.get("LINE_CHANNEL_ACCESS_TOKEN", "")
 LINE_USER_ID = os.environ.get("LINE_USER_ID", "")
@@ -73,7 +73,7 @@ def main():
         else:
             entry_str = "12/16 20:00"
 
-        # 通知メッセージの作成（デザインフォーマットは本番と同一）
+        # デザイン変更なし（既存のメッセージフォーマットをそのまま維持）
         test_msg = (
             f"🧪【動作テスト通知（第1戦）】\n"
             f"実ページ（第{round_num}戦）から自動取得したデータです。\n\n"

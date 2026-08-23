@@ -1,17 +1,13 @@
 name: Tournament Monitor Cron
 
 on:
+  workflow_dispatch: # 外部Web Cronからの起動用
   schedule:
-    # 30分ごとに自動実行（UTC表記）
-    - cron: '*/30 * * * *'
-  workflow_dispatch: # 手動実行ボタンを有効化
+    - cron: '*/30 * * * *' # 予備としてのGitHub標準Cron（30分間隔）
 
 jobs:
   run-monitor:
     runs-on: ubuntu-latest
-    permissions:
-      contents: write # DBファイルをGitに書き戻す権限
-
     steps:
       - name: Check out repository
         uses: actions/checkout@v4
@@ -30,12 +26,12 @@ jobs:
         env:
           LINE_CHANNEL_ACCESS_TOKEN: ${{ secrets.LINE_CHANNEL_ACCESS_TOKEN }}
           LINE_USER_ID: ${{ secrets.LINE_USER_ID }}
-        run: python main.py
+        run: |
+          python main.py
 
       - name: Commit and Push DB Changes
         run: |
           git config --local user.email "action@github.com"
           git config --local user.name "GitHub Action"
           git add tournaments.db
-          # DBに変化があった場合のみコミット＆Push（無駄な更新履歴の防止）
-          git diff --staged --quiet || (git commit -m "Auto-update tournaments.db [skip ci]" && git push)
+          git diff --quiet && git diff --staged --quiet || (git commit -m "Auto-update DB" && git push)

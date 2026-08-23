@@ -4,7 +4,7 @@ import requests
 from bs4 import BeautifulSoup
 
 # ==========================================
-# 環境変数からLINE接続情報を取得
+# 安全制御・環境変数設定
 # ==========================================
 LINE_CHANNEL_ACCESS_TOKEN = os.environ.get("LINE_CHANNEL_ACCESS_TOKEN", "")
 LINE_USER_ID = os.environ.get("LINE_USER_ID", "")
@@ -40,7 +40,7 @@ def send_line_message(text_message):
 
 
 def main():
-    print("第1戦ページの取得・テスト送信を開始します。")
+    print("デザイン確認用：第1戦データの取得とテスト送信を行います。")
 
     headers = {"User-Agent": "Mozilla/5.0"}
     try:
@@ -73,8 +73,10 @@ def main():
         else:
             entry_str = "12/16 20:00"
 
-        # デザイン変更なし（シルフ実行時と完全同一のメッセージ構造）
-        test_msg = (
+        # --------------------------------------------------
+        # 【通知デザイン設定エリア】指示通り変更なし
+        # --------------------------------------------------
+        message_design = (
             f"🧪【動作テスト通知】\n"
             f"実ページ（第{round_num}戦）から自動取得したデータです。\n\n"
             f"【新規大会情報】\n"
@@ -83,11 +85,10 @@ def main():
             f"URL: {TEST_URL}"
         )
 
-        # LINE送信（1通のみ）
-        send_line_message(test_msg)
+        send_line_message(message_design)
 
     except Exception as e:
-        print(f"テスト実行エラー: {e}")
+        print(f"デザインテスト送信エラー: {e}")
 
 
 if __name__ == "__main__":

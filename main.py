@@ -2,7 +2,7 @@ import os
 import re
 import sqlite3
 import time
-from datetime import datetime, timedelta
+from datetime import datetime, timedelta, timezone
 import requests
 from bs4 import BeautifulSoup
 
@@ -36,6 +36,12 @@ LOCATION_COORDS = {
     "上浜": (39.51, 139.95),
 }
 
+# ==========================================
+# ★重要★ 日本時間（JST）の強制取得関数
+# ==========================================
+def get_jst_now():
+    # サーバーの地域設定に関わらず、強制的に日本時間(+9時間)の現在時刻を算出する
+    return datetime.now(timezone.utc).astimezone(timezone(timedelta(hours=9))).replace(tzinfo=None)
 
 # ==========================================
 # 強化版 ネットワーク接続ヘルパー (自動リトライ＆ウェイト)
@@ -374,11 +380,13 @@ def fetch_page_text(url):
 # メイン監視処理
 # ==========================================
 def main():
-    print(f"[{datetime.now().strftime('%Y-%m-%d %H:%M:%S')}] 全自動監視処理（最適化版）を開始します。")
+    # ★重要：タイムゾーンの時差問題を解消し、確実に日本時間を取得
+    now = get_jst_now()
+    print(f"[{now.strftime('%Y-%m-%d %H:%M:%S')}] 全自動監視処理（日本時間完全同期・通知優先度最適化版）を開始します。")
+    
     conn, is_initial_setup = init_db()
     c = conn.cursor()
 
-    now = datetime.now()
     current_year = now.year
     
     # 🌙 おやすみモード（深夜判定）
@@ -386,12 +394,12 @@ def main():
     if is_night_mode:
         print("🌙 現在はおやすみモード（通知保留時間帯）です。一部の通知は朝9時まで保留されます。")
 
-    # 🔄 自動年切り替えロジック（スマート最適化版）
+    # 🔄 自動年切り替えロジック
     target_years = [current_year]
     if now.month <= 3:
-        target_years.append(current_year - 1) # 1〜3月は前年シーズンのMASTERS等に対応
+        target_years.append(current_year - 1)
     if now.month >= 9:
-        target_years.append(current_year + 1) # 9月以降は来年シーズンの準備に対応
+        target_years.append(current_year + 1)
     target_years = sorted(list(set(target_years)))
 
     urls_to_check = []
@@ -448,7 +456,6 @@ def main():
             fee = extract_fee(combined_text)
             theme_color = get_theme_color(location)
 
-            # "順延" が含まれる場合も即座に中止・変更（is_cancelled=1）として扱う
             cancel_keywords = ["見送る", "中止", "延期", "順延", "取りやめ", "開催を見送"]
             is_cancelled = 1 if any(kw in combined_text for kw in cancel_keywords) else 0
 
@@ -499,7 +506,7 @@ def main():
                     c.execute("UPDATE tournaments SET is_cancelled = 1 WHERE url = ?", (url,))
                     continue
 
-                # 🌙 3. 日時更新検知
+                # 3. 日時更新検知
                 if db_event_date != event_date_str or db_entry_str != entry_str:
                     if not is_night_mode:
                         if not is_initial_setup and (db_event_date == "開催日未定" or db_entry_str == "エントリー日時未定"):
@@ -507,32 +514,34 @@ def main():
                                 "header": "📢【大会情報更新】", "round_num": db_round, "location": db_loc,
                                 "event_date_str": event_date_str, "entry_str": entry_str, "url": final_url, "theme_color": theme_color,
                             })
-                        c.execute(
-                            "UPDATE tournaments SET event_date = ?, entry_datetime = ?, entry_str = ?, reception_time = ?, fee = ?, original_text = ? WHERE url = ?",
-                            (event_date_str, entry_dt.strftime("%Y-%m-%d %H:%M:%S") if entry_dt else None, entry_str, reception_time, fee, combined_text, url),
-                        )
+                    # ★修正点：夜間でもデータベースへの記録は絶対に実行する（情報のズレ防止）
+                    c.execute(
+                        "UPDATE tournaments SET event_date = ?, entry_datetime = ?, entry_str = ?, reception_time = ?, fee = ?, original_text = ? WHERE url = ?",
+                        (event_date_str, entry_dt.strftime("%Y-%m-%d %H:%M:%S") if entry_dt else None, entry_str, reception_time, fee, combined_text, url),
+                    )
 
                 # 4. エントリー時刻に関するリマインド処理
                 if entry_dt and is_cancelled == 0:
                     if entry_dt > now:
                         time_diff = entry_dt - now
-                        # 🌙 本日/明日の通知
-                        if timedelta(0) < time_diff <= timedelta(days=1) and not n_1d:
-                            if not is_night_mode:
-                                is_today = (entry_dt.date() == now.date())
-                                header_text = "【本日エントリー開始】" if is_today else "【明日エントリー開始】"
-                                notify_queue.append({"header": header_text, "round_num": db_round, "location": db_loc, "event_date_str": event_date_str, "entry_str": entry_str, "url": final_url, "theme_color": theme_color})
-                                db_updates.append(("UPDATE tournaments SET notified_1d = 1 WHERE url = ?", (url,)))
                         
-                        # 🚨 1時間前
-                        elif timedelta(0) < time_diff <= timedelta(hours=1) and not n_1h:
-                            notify_queue.append({"header": "⏰【1時間前リマインド】", "round_num": db_round, "location": db_loc, "event_date_str": event_date_str, "entry_str": entry_str, "url": final_url, "theme_color": theme_color})
-                            db_updates.append(("UPDATE tournaments SET notified_1h = 1 WHERE url = ?", (url,)))
-                        
-                        # 🚨 15分前
-                        elif timedelta(0) < time_diff <= timedelta(minutes=15) and not n_15m:
-                            notify_queue.append({"header": "🔥【15分前直前リマインド】", "round_num": db_round, "location": db_loc, "event_date_str": event_date_str, "entry_str": entry_str, "url": final_url, "theme_color": theme_color})
-                            db_updates.append(("UPDATE tournaments SET notified_15m = 1 WHERE url = ?", (url,)))
+                        # ★修正点：判定を逆算式（直前優先）に組み直し、巡回タイミングがずれても最も重要な通知を逃さない構造に変更
+                        if timedelta(0) < time_diff <= timedelta(minutes=15):
+                            if not n_15m:
+                                notify_queue.append({"header": "🔥【15分前直前リマインド】", "round_num": db_round, "location": db_loc, "event_date_str": event_date_str, "entry_str": entry_str, "url": final_url, "theme_color": theme_color})
+                                # 同時に過去の不要なフラグも全て既読化し、二重通知を防ぐ
+                                db_updates.append(("UPDATE tournaments SET notified_15m=1, notified_1h=1, notified_1d=1 WHERE url=?", (url,)))
+                        elif timedelta(0) < time_diff <= timedelta(hours=1):
+                            if not n_1h:
+                                notify_queue.append({"header": "⏰【1時間前リマインド】", "round_num": db_round, "location": db_loc, "event_date_str": event_date_str, "entry_str": entry_str, "url": final_url, "theme_color": theme_color})
+                                db_updates.append(("UPDATE tournaments SET notified_1h=1, notified_1d=1 WHERE url=?", (url,)))
+                        elif timedelta(0) < time_diff <= timedelta(days=1):
+                            if not n_1d:
+                                if not is_night_mode:
+                                    is_today = (entry_dt.date() == now.date())
+                                    header_text = "【本日エントリー開始】" if is_today else "【明日エントリー開始】"
+                                    notify_queue.append({"header": header_text, "round_num": db_round, "location": db_loc, "event_date_str": event_date_str, "entry_str": entry_str, "url": final_url, "theme_color": theme_color})
+                                    db_updates.append(("UPDATE tournaments SET notified_1d=1 WHERE url=?", (url,)))
                     else:
                         passed_time = now - entry_dt
                         # 🚨 ちょうど開始

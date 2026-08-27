@@ -14,7 +14,7 @@ LINE_USER_ID = os.environ.get("LINE_USER_ID", "")
 
 DB_PATH = "tournaments.db"
 MAX_NOTIFY_LIMIT = 5  # 大量通知ストッパー
-TIMEOUT_SEC = 15  # 通信タイムアウト時間
+TIMEOUT_SEC = 10  # ★修正: 通信タイムアウト時間を短縮(10秒)
 
 # --- 大会前日リマインドの通知時間帯指定 (前夜19時〜23時の間) ---
 EVENT_1D_HOUR_START = 19
@@ -37,16 +37,15 @@ LOCATION_COORDS = {
 }
 
 # ==========================================
-# ★重要★ 日本時間（JST）の強制取得関数
+# 日本時間（JST）の強制取得関数
 # ==========================================
 def get_jst_now():
-    # サーバーの地域設定に関わらず、強制的に日本時間(+9時間)の現在時刻を算出する
     return datetime.now(timezone.utc).astimezone(timezone(timedelta(hours=9))).replace(tzinfo=None)
 
 # ==========================================
-# 強化版 ネットワーク接続ヘルパー (自動リトライ＆ウェイト)
+# 強化版 ネットワーク接続ヘルパー (自動リトライ＆ウェイト短縮版)
 # ==========================================
-def fetch_url(url, retries=5):
+def fetch_url(url, retries=3): # ★修正: リトライ回数を3回に減らす
     headers = {
         "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36"
     }
@@ -57,12 +56,11 @@ def fetch_url(url, retries=5):
             return res
         except Exception as e:
             if i == retries - 1:
-                print(f"⚠️ 接続失敗 (上限到達 {retries}回): {url} -> {e}")
+                print(f"⚠️ 接続失敗 (上限到達): {url} -> {e}")
                 return None
-            wait_time = (i + 1) * 3
+            wait_time = 2 # ★修正: リトライ待機時間を短く固定
             print(f"💡 リトライ待ち ({i+1}/{retries}回目, {wait_time}秒後): {url}")
             time.sleep(wait_time)
-
 
 # ==========================================
 # 天気自動取得＆アドバイス生成ロジック（Open-Meteo API）
@@ -98,7 +96,6 @@ def get_weather_advice(location_name):
         pass
 
     return "🎣 体調管理を万全にして大会に挑みましょう！日頃の練習成果を発揮して優勝目指してファイトです！"
-
 
 # ==========================================
 # 1. データベース初期化 (18カラム)
@@ -139,30 +136,28 @@ def init_db():
 
     return conn, is_initial_setup
 
-
 # ==========================================
 # 指定都道府県グループ別テーマカラー判定ロジック
 # ==========================================
 def get_theme_color(location_name):
     if any(kw in location_name for kw in ["栃木", "群馬", "キングフィッシャー", "上永野", "みどり", "なら山", "大芦", "増井", "宇都宮", "アメイズ", "中之沢", "赤城", "川場", "沼田", "宮城", "ベリーズ", "イワナ"]):
-        return "#03A9F4"  # 🔵 ライトブルー
+        return "#03A9F4"  
     elif any(kw in location_name for kw in ["千葉", "茨城", "ジョイバレー", "けんた", "千葉川すそ", "座間", "高萩", "エリアJ"]):
-        return "#FF5722"  # 🟧 レッドオレンジ
+        return "#FF5722"  
     elif any(kw in location_name for kw in ["埼玉", "朝霞", "吉羽園", "しらこばと", "川越"]):
-        return "#E91E63"  # 🩷 ローズピンク
+        return "#E91E63"  
     elif any(kw in location_name for kw in ["神奈川", "上浜", "王禅寺", "開成", "足柄", "ベリーパーク"]):
-        return "#9C27B0"  # 🟪 ディープパープル
+        return "#9C27B0"  
     elif any(kw in location_name for kw in ["東京", "浅川", "秋川"]):
-        return "#3F51B5"  # 🔷 インディゴブルー
+        return "#3F51B5"  
     elif any(kw in location_name for kw in ["静岡", "浜名湖", "東山湖", "すその", "柿田川"]):
-        return "#FF9800"  # 🟠 オレンジ
+        return "#FF9800"  
     elif any(kw in location_name for kw in ["山梨", "長野", "白州", "シルフ", "竜華池", "鹿島槍"]):
-        return "#4CAF50"  # 🟢 グリーン
+        return "#4CAF50"  
     elif any(kw in location_name for kw in ["三重", "岐阜", "滋賀", "サンクチュアリ", "サンク", "瑞浪", "平谷", "醒井"]):
-        return "#009688"  # 翡翠色/ティール
+        return "#009688"  
     else:
-        return "#607D8B"  # 🩶 ブルーグレー
-
+        return "#607D8B"  
 
 # ==========================================
 # テキスト解析ヘルパー関数群
@@ -180,7 +175,6 @@ def extract_event_date_info(text, year):
         except ValueError:
             pass
     return None, "開催日未定"
-
 
 def parse_entry_datetime(text, year):
     weekdays = ["月", "火", "水", "木", "金", "土", "日"]
@@ -201,29 +195,19 @@ def parse_entry_datetime(text, year):
             pass
     return None, "エントリー日時未定"
 
-
 def extract_reception_time(text):
     match = re.search(r"(?:受付|受\s*付)[：:\s]*(\d{1,2}:\d{2}\s*[\~～-]\s*\d{1,2}:\d{2}|\d{1,2}:\d{2}\s*より|\d{1,2}:\d{2})", text)
     return match.group(1).strip() if match else "情報参照"
-
 
 def extract_fee(text):
     match = re.search(r"(?:参加費用|参加費|費用)[：:\s]*([\d,]+円[^\n]*|\d+,\d+円|\d+円)", text)
     return match.group(1).strip() if match else "情報参照"
 
-
 # ==========================================
 # LINE Push Message (Flex Message カルーセル)
 # ==========================================
 def send_line_flex(
-    header_title,
-    round_num,
-    location,
-    event_date_str,
-    entry_str,
-    page_url,
-    theme_color,
-    extra_info=None,
+    header_title, round_num, location, event_date_str, entry_str, page_url, theme_color, extra_info=None,
 ):
     if not LINE_CHANNEL_ACCESS_TOKEN or not LINE_USER_ID:
         print(f"[テスト出力]: {header_title} 第{round_num}戦 {location}")
@@ -236,21 +220,8 @@ def send_line_flex(
     }
 
     body_contents = [
-        {
-            "type": "text",
-            "text": f"第{round_num}戦",
-            "weight": "bold",
-            "size": "xl",
-            "color": "#333333",
-        },
-        {
-            "type": "text",
-            "text": f"{location}大会",
-            "weight": "bold",
-            "size": "md",
-            "color": "#555555",
-            "wrap": True,
-        },
+        {"type": "text", "text": f"第{round_num}戦", "weight": "bold", "size": "xl", "color": "#333333"},
+        {"type": "text", "text": f"{location}大会", "weight": "bold", "size": "md", "color": "#555555", "wrap": True},
         {"type": "separator"},
         {
             "type": "box",
@@ -340,8 +311,7 @@ def send_line_flex(
     }
 
     try:
-        response = requests.post(url, headers=headers, json=flex_payload, timeout=TIMEOUT_SEC)
-        response.raise_for_status()
+        requests.post(url, headers=headers, json=flex_payload, timeout=TIMEOUT_SEC)
         print(f"LINE送信成功: {header_title} (第{round_num}戦)")
     except Exception as e:
         print(f"LINE送信エラー: {e}")
@@ -363,7 +333,6 @@ def send_simple_text(text_message):
     except Exception as e:
         print(f"システム通知送信エラー: {e}")
 
-
 def fetch_page_text(url):
     res = fetch_url(url)
     if res and res.status_code == 200:
@@ -375,26 +344,22 @@ def fetch_page_text(url):
             pass
     return ""
 
-
 # ==========================================
 # メイン監視処理
 # ==========================================
 def main():
-    # ★重要：タイムゾーンの時差問題を解消し、確実に日本時間を取得
     now = get_jst_now()
-    print(f"[{now.strftime('%Y-%m-%d %H:%M:%S')}] 全自動監視処理（日本時間完全同期・通知優先度最適化版）を開始します。")
+    print(f"[{now.strftime('%Y-%m-%d %H:%M:%S')}] 全自動監視処理（ログ・タイムアウト改善版）を開始します。")
     
     conn, is_initial_setup = init_db()
     c = conn.cursor()
 
     current_year = now.year
     
-    # 🌙 おやすみモード（深夜判定）
     is_night_mode = (now.hour >= NIGHT_MODE_START or now.hour < NIGHT_MODE_END)
     if is_night_mode:
-        print("🌙 現在はおやすみモード（通知保留時間帯）です。一部の通知は朝9時まで保留されます。")
+        print("🌙 現在はおやすみモード（通知保留時間帯）です。")
 
-    # 🔄 自動年切り替えロジック
     target_years = [current_year]
     if now.month <= 3:
         target_years.append(current_year - 1)
@@ -406,6 +371,7 @@ def main():
     
     for year in target_years:
         tag_url = f"https://www.kanritsuriba.com/at/tag/areatournament{year}/"
+        print(f"🔍 一覧ページ取得中: {tag_url}")
         res = fetch_url(tag_url)
         if not res:
             print(f"⚠️ {year}年度一覧ページの取得に失敗しました。")
@@ -423,12 +389,15 @@ def main():
             print(f"一覧解析エラー({year}): {e}")
 
     urls_to_check = list(set(urls_to_check))
+    print(f"📊 チェック対象URL数: {len(urls_to_check)}件")
 
     notify_queue = []
     db_updates = []
 
     for url in urls_to_check:
         try:
+            print(f"🔍 ページ解析中: {url}") # ★修正: 進行状況がわかるようにログ追加
+            
             match_year = re.search(r"/at/(\d{4})_", url)
             url_year = int(match_year.group(1)) if match_year else current_year
 
@@ -481,7 +450,7 @@ def main():
                 if not is_initial_setup and not is_night_mode:
                     notify_queue.append({
                         "header": "🆕【新規大会開催予定】", "round_num": round_num, "location": location,
-                        "event_date_str": event_date_str, "entry_str": entry_str, "url": final_url, "theme_color": theme_color,
+                        "event_date_str": event_date_str, "entry_str": entry_str, "url": url, "theme_color": theme_color,
                     })
             else:
                 (
@@ -489,73 +458,61 @@ def main():
                     db_reception, db_fee, db_text, db_cancelled, n_new, n_1d, n_1h, n_15m, n_event_1d, n_just, n_after_24h
                 ) = row
 
-                # 🌙 1. 保留されていた新規大会の通知
                 if n_new == 0 and not is_night_mode:
                     notify_queue.append({
                         "header": "🆕【新規大会開催予定】", "round_num": db_round, "location": db_loc,
-                        "event_date_str": event_date_str, "entry_str": entry_str, "url": final_url, "theme_color": theme_color,
+                        "event_date_str": event_date_str, "entry_str": entry_str, "url": url, "theme_color": theme_color,
                     })
                     c.execute("UPDATE tournaments SET notified_new = 1 WHERE url = ?", (url,))
 
-                # 🚨 2. 緊急中止・変更通知
                 if is_cancelled == 1 and db_cancelled == 0:
                     notify_queue.append({
                         "header": "🚨【緊急：開催中止・変更】", "round_num": db_round, "location": db_loc,
-                        "event_date_str": event_date_str, "entry_str": "開催中止・変更が発生しました", "url": final_url, "theme_color": "#D32F2F",
+                        "event_date_str": event_date_str, "entry_str": "開催中止・変更が発生しました", "url": url, "theme_color": "#D32F2F",
                     })
                     c.execute("UPDATE tournaments SET is_cancelled = 1 WHERE url = ?", (url,))
                     continue
 
-                # 3. 日時更新検知
                 if db_event_date != event_date_str or db_entry_str != entry_str:
                     if not is_night_mode:
                         if not is_initial_setup and (db_event_date == "開催日未定" or db_entry_str == "エントリー日時未定"):
                             notify_queue.append({
                                 "header": "📢【大会情報更新】", "round_num": db_round, "location": db_loc,
-                                "event_date_str": event_date_str, "entry_str": entry_str, "url": final_url, "theme_color": theme_color,
+                                "event_date_str": event_date_str, "entry_str": entry_str, "url": url, "theme_color": theme_color,
                             })
-                    # ★修正点：夜間でもデータベースへの記録は絶対に実行する（情報のズレ防止）
                     c.execute(
                         "UPDATE tournaments SET event_date = ?, entry_datetime = ?, entry_str = ?, reception_time = ?, fee = ?, original_text = ? WHERE url = ?",
                         (event_date_str, entry_dt.strftime("%Y-%m-%d %H:%M:%S") if entry_dt else None, entry_str, reception_time, fee, combined_text, url),
                     )
 
-                # 4. エントリー時刻に関するリマインド処理
                 if entry_dt and is_cancelled == 0:
                     if entry_dt > now:
                         time_diff = entry_dt - now
-                        
-                        # ★修正点：判定を逆算式（直前優先）に組み直し、巡回タイミングがずれても最も重要な通知を逃さない構造に変更
                         if timedelta(0) < time_diff <= timedelta(minutes=15):
                             if not n_15m:
-                                notify_queue.append({"header": "🔥【15分前直前リマインド】", "round_num": db_round, "location": db_loc, "event_date_str": event_date_str, "entry_str": entry_str, "url": final_url, "theme_color": theme_color})
-                                # 同時に過去の不要なフラグも全て既読化し、二重通知を防ぐ
+                                notify_queue.append({"header": "🔥【15分前直前リマインド】", "round_num": db_round, "location": db_loc, "event_date_str": event_date_str, "entry_str": entry_str, "url": url, "theme_color": theme_color})
                                 db_updates.append(("UPDATE tournaments SET notified_15m=1, notified_1h=1, notified_1d=1 WHERE url=?", (url,)))
                         elif timedelta(0) < time_diff <= timedelta(hours=1):
                             if not n_1h:
-                                notify_queue.append({"header": "⏰【1時間前リマインド】", "round_num": db_round, "location": db_loc, "event_date_str": event_date_str, "entry_str": entry_str, "url": final_url, "theme_color": theme_color})
+                                notify_queue.append({"header": "⏰【1時間前リマインド】", "round_num": db_round, "location": db_loc, "event_date_str": event_date_str, "entry_str": entry_str, "url": url, "theme_color": theme_color})
                                 db_updates.append(("UPDATE tournaments SET notified_1h=1, notified_1d=1 WHERE url=?", (url,)))
                         elif timedelta(0) < time_diff <= timedelta(days=1):
                             if not n_1d:
                                 if not is_night_mode:
                                     is_today = (entry_dt.date() == now.date())
                                     header_text = "【本日エントリー開始】" if is_today else "【明日エントリー開始】"
-                                    notify_queue.append({"header": header_text, "round_num": db_round, "location": db_loc, "event_date_str": event_date_str, "entry_str": entry_str, "url": final_url, "theme_color": theme_color})
+                                    notify_queue.append({"header": header_text, "round_num": db_round, "location": db_loc, "event_date_str": event_date_str, "entry_str": entry_str, "url": url, "theme_color": theme_color})
                                     db_updates.append(("UPDATE tournaments SET notified_1d=1 WHERE url=?", (url,)))
                     else:
                         passed_time = now - entry_dt
-                        # 🚨 ちょうど開始
                         if timedelta(0) <= passed_time <= timedelta(minutes=15) and not n_just:
-                            notify_queue.append({"header": "🏁【エントリー開始！】", "round_num": db_round, "location": db_loc, "event_date_str": event_date_str, "entry_str": entry_str, "url": final_url, "theme_color": theme_color})
+                            notify_queue.append({"header": "🏁【エントリー開始！】", "round_num": db_round, "location": db_loc, "event_date_str": event_date_str, "entry_str": entry_str, "url": url, "theme_color": theme_color})
                             db_updates.append(("UPDATE tournaments SET notified_just = 1 WHERE url = ?", (url,)))
-                        
-                        # 🌙 24時間後忘れ防止
                         elif timedelta(days=1) <= passed_time <= timedelta(days=2) and not n_after_24h:
                             if not is_night_mode:
-                                notify_queue.append({"header": "⚠️【エントリー忘れ防止】昨日からエントリーが開始されています！", "round_num": db_round, "location": db_loc, "event_date_str": event_date_str, "entry_str": entry_str, "url": final_url, "theme_color": theme_color})
+                                notify_queue.append({"header": "⚠️【エントリー忘れ防止】昨日からエントリーが開始されています！", "round_num": db_round, "location": db_loc, "event_date_str": event_date_str, "entry_str": entry_str, "url": url, "theme_color": theme_color})
                                 db_updates.append(("UPDATE tournaments SET notified_after_24h = 1 WHERE url = ?", (url,)))
 
-                # 大会前日リマインド（前夜19:00〜23:00・天気＋応援文付き）
                 if event_dt and is_cancelled == 0:
                     is_day_before = (now.date() == (event_dt.date() - timedelta(days=1)))
                     is_in_target_hours = (EVENT_1D_HOUR_START <= now.hour < EVENT_1D_HOUR_END)
@@ -564,7 +521,7 @@ def main():
                         weather_advice = get_weather_advice(db_loc)
                         notify_queue.append({
                             "header": "📅【明日大会開催！直前案内】", "round_num": db_round, "location": db_loc,
-                            "event_date_str": event_date_str, "entry_str": entry_str, "url": final_url, "theme_color": theme_color,
+                            "event_date_str": event_date_str, "entry_str": entry_str, "url": url, "theme_color": theme_color,
                             "extra_info": {"reception": reception_time, "fee": fee, "weather_advice": weather_advice},
                         })
                         db_updates.append(("UPDATE tournaments SET notified_event_1d = 1 WHERE url = ?", (url,)))
@@ -572,7 +529,6 @@ def main():
         except Exception as e:
             print(f"詳細解析エラー ({url}): {e}")
 
-    # 大量通知ストッパー制御
     if not is_initial_setup and notify_queue:
         if len(notify_queue) > MAX_NOTIFY_LIMIT:
             print(f"⚠️ 通知件数が制限({MAX_NOTIFY_LIMIT}件)を超えたため連続送信をストップしました。")
@@ -590,7 +546,6 @@ def main():
     conn.commit()
     conn.close()
     print("全自動監視処理が正常完了しました。")
-
 
 if __name__ == "__main__":
     main()

@@ -14,7 +14,7 @@ LINE_USER_ID = os.environ.get("LINE_USER_ID", "")
 
 DB_PATH = "tournaments.db"
 MAX_NOTIFY_LIMIT = 5  # 大量通知ストッパー
-TIMEOUT_SEC = 10  # ★修正: 通信タイムアウト時間を短縮(10秒)
+TIMEOUT_SEC = 10  # 通信タイムアウト時間(10秒)
 
 # --- 大会前日リマインドの通知時間帯指定 (前夜19時〜23時の間) ---
 EVENT_1D_HOUR_START = 19
@@ -45,7 +45,7 @@ def get_jst_now():
 # ==========================================
 # 強化版 ネットワーク接続ヘルパー (自動リトライ＆ウェイト短縮版)
 # ==========================================
-def fetch_url(url, retries=3): # ★修正: リトライ回数を3回に減らす
+def fetch_url(url, retries=3):
     headers = {
         "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36"
     }
@@ -58,7 +58,7 @@ def fetch_url(url, retries=3): # ★修正: リトライ回数を3回に減ら�
             if i == retries - 1:
                 print(f"⚠️ 接続失敗 (上限到達): {url} -> {e}")
                 return None
-            wait_time = 2 # ★修正: リトライ待機時間を短く固定
+            wait_time = 2
             print(f"💡 リトライ待ち ({i+1}/{retries}回目, {wait_time}秒後): {url}")
             time.sleep(wait_time)
 
@@ -349,7 +349,7 @@ def fetch_page_text(url):
 # ==========================================
 def main():
     now = get_jst_now()
-    print(f"[{now.strftime('%Y-%m-%d %H:%M:%S')}] 全自動監視処理（ログ・タイムアウト改善版）を開始します。")
+    print(f"[{now.strftime('%Y-%m-%d %H:%M:%S')}] 全自動監視処理（忘れ防止前倒し版）を開始します。")
     
     conn, is_initial_setup = init_db()
     c = conn.cursor()
@@ -396,7 +396,7 @@ def main():
 
     for url in urls_to_check:
         try:
-            print(f"🔍 ページ解析中: {url}") # ★修正: 進行状況がわかるようにログ追加
+            print(f"🔍 ページ解析中: {url}")
             
             match_year = re.search(r"/at/(\d{4})_", url)
             url_year = int(match_year.group(1)) if match_year else current_year
@@ -508,7 +508,10 @@ def main():
                         if timedelta(0) <= passed_time <= timedelta(minutes=15) and not n_just:
                             notify_queue.append({"header": "🏁【エントリー開始！】", "round_num": db_round, "location": db_loc, "event_date_str": event_date_str, "entry_str": entry_str, "url": url, "theme_color": theme_color})
                             db_updates.append(("UPDATE tournaments SET notified_just = 1 WHERE url = ?", (url,)))
-                        elif timedelta(days=1) <= passed_time <= timedelta(days=2) and not n_after_24h:
+                        
+                        # 🌙 翌日10時の忘れ防止通知
+                        target_10am = (entry_dt + timedelta(days=1)).replace(hour=10, minute=0, second=0, microsecond=0)
+                        elif target_10am <= now <= target_10am + timedelta(hours=12) and not n_after_24h:
                             if not is_night_mode:
                                 notify_queue.append({"header": "⚠️【エントリー忘れ防止】昨日からエントリーが開始されています！", "round_num": db_round, "location": db_loc, "event_date_str": event_date_str, "entry_str": entry_str, "url": url, "theme_color": theme_color})
                                 db_updates.append(("UPDATE tournaments SET notified_after_24h = 1 WHERE url = ?", (url,)))

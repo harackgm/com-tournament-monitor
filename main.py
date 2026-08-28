@@ -13,12 +13,12 @@ LINE_CHANNEL_ACCESS_TOKEN = os.environ.get("LINE_CHANNEL_ACCESS_TOKEN", "")
 LINE_USER_ID = os.environ.get("LINE_USER_ID", "")
 
 DB_PATH = "tournaments.db"
-MAX_NOTIFY_LIMIT = 5  # 大量通知ストッパー
+MAX_NOTIFY_LIMIT = 5  # 大量通知ストッパー（安全装置）
 TIMEOUT_SEC = 10  # 通信タイムアウト時間(10秒)
 
-# --- 大会前日リマインドの通知時間帯指定 (前夜19時〜23時の間) ---
-EVENT_1D_HOUR_START = 19
-EVENT_1D_HOUR_END = 23
+# --- 大会前日リマインドの通知時間帯指定 (前夜18時〜22時の間へ前倒し改善) ---
+EVENT_1D_HOUR_START = 18
+EVENT_1D_HOUR_END = 22
 
 # --- 🌙 おやすみモード（深夜通知防止）設定 ---
 NIGHT_MODE_START = 23  # 23時以降は通知を保留
@@ -349,7 +349,7 @@ def fetch_page_text(url):
 # ==========================================
 def main():
     now = get_jst_now()
-    print(f"[{now.strftime('%Y-%m-%d %H:%M:%S')}] 全自動監視処理（忘れ防止前倒し版）を開始します。")
+    print(f"[{now.strftime('%Y-%m-%d %H:%M:%S')}] 全自動監視処理（完全バグ修正・最適化版）を開始します。")
     
     conn, is_initial_setup = init_db()
     c = conn.cursor()
@@ -480,10 +480,11 @@ def main():
                                 "header": "📢【大会情報更新】", "round_num": db_round, "location": db_loc,
                                 "event_date_str": event_date_str, "entry_str": entry_str, "url": url, "theme_color": theme_color,
                             })
-                    c.execute(
-                        "UPDATE tournaments SET event_date = ?, entry_datetime = ?, entry_str = ?, reception_time = ?, fee = ?, original_text = ? WHERE url = ?",
-                        (event_date_str, entry_dt.strftime("%Y-%m-%d %H:%M:%S") if entry_dt else None, entry_str, reception_time, fee, combined_text, url),
-                    )
+                        # ★修正: 深夜（おやすみモード中）はDBの更新処理も保留し、朝に通知と一緒に確実に実行させる
+                        c.execute(
+                            "UPDATE tournaments SET event_date = ?, entry_datetime = ?, entry_str = ?, reception_time = ?, fee = ?, original_text = ? WHERE url = ?",
+                            (event_date_str, entry_dt.strftime("%Y-%m-%d %H:%M:%S") if entry_dt else None, entry_str, reception_time, fee, combined_text, url),
+                        )
 
                 if entry_dt and is_cancelled == 0:
                     if entry_dt > now:
@@ -505,12 +506,11 @@ def main():
                                     db_updates.append(("UPDATE tournaments SET notified_1d=1 WHERE url=?", (url,)))
                     else:
                         passed_time = now - entry_dt
+                        target_10am = (entry_dt + timedelta(days=1)).replace(hour=10, minute=0, second=0, microsecond=0)
+                        
                         if timedelta(0) <= passed_time <= timedelta(minutes=15) and not n_just:
                             notify_queue.append({"header": "🏁【エントリー開始！】", "round_num": db_round, "location": db_loc, "event_date_str": event_date_str, "entry_str": entry_str, "url": url, "theme_color": theme_color})
                             db_updates.append(("UPDATE tournaments SET notified_just = 1 WHERE url = ?", (url,)))
-                        
-                        # 🌙 翌日10時の忘れ防止通知
-                        target_10am = (entry_dt + timedelta(days=1)).replace(hour=10, minute=0, second=0, microsecond=0)
                         elif target_10am <= now <= target_10am + timedelta(hours=12) and not n_after_24h:
                             if not is_night_mode:
                                 notify_queue.append({"header": "⚠️【エントリー忘れ防止】昨日からエントリーが開始されています！", "round_num": db_round, "location": db_loc, "event_date_str": event_date_str, "entry_str": entry_str, "url": url, "theme_color": theme_color})
@@ -532,6 +532,7 @@ def main():
         except Exception as e:
             print(f"詳細解析エラー ({url}): {e}")
 
+    # ★安全装置: 未通知が制限を超えた場合は個別送信をスキップし、システム警告へ切り替え
     if not is_initial_setup and notify_queue:
         if len(notify_queue) > MAX_NOTIFY_LIMIT:
             print(f"⚠️ 通知件数が制限({MAX_NOTIFY_LIMIT}件)を超えたため連続送信をストップしました。")

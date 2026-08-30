@@ -198,12 +198,10 @@ def parse_entry_datetime(text, year):
             pass
     return None, "エントリー日時未定"
 
-# ★修正：受付時間の抽出強化 (【受 付】のような記号や空白に対応)
 def extract_reception_time(text):
     match = re.search(r"【?受\s*付】?[：:\s]*(\d{1,2}[:：]\d{2}\s*[\~～\-]\s*\d{1,2}[:：]\d{2}|\d{1,2}[:：]\d{2}\s*より|\d{1,2}[:：]\d{2})", text)
     return match.group(1).strip() if match else "情報参照"
 
-# ★修正：参加費用の抽出強化 (【参加費用】や後ろの補足説明カッコに対応)
 def extract_fee(text):
     match = re.search(r"【?(?:参加費用|参加費|費用)】?[：:\s]*([\d,]+円(?:\s*[\(（][^\)）]*[\)）])?)", text)
     return match.group(1).strip() if match else "情報参照"
@@ -234,6 +232,7 @@ def extract_tournament_results_from_html(html_content):
                 results.append({"rank": rank, "name": name, "image_url": img_url})
     return results
 
+# ★修正：動画抽出ロジック（aタグのテキストリンクにも完全対応）
 def extract_videos_from_html(html_content):
     videos = {}
     if not html_content: return videos
@@ -242,17 +241,32 @@ def extract_videos_from_html(html_content):
     for tag in soup.find_all(['h3', 'h4', 'h2']):
         text = tag.get_text(strip=True)
         is_interview = "インタビュー" in text
-        is_final = "決勝戦" in text
+        is_final = "決勝戦" in text or "決勝動画" in text
         
         if is_interview or is_final:
             nxt = tag.find_next_sibling()
             count = 0
             while nxt and count < 3:
+                vid_url = None
+                
+                # 1. 埋め込み動画(iframe)を探す
                 iframe = nxt.find('iframe') if hasattr(nxt, 'find') else None
                 if not iframe and nxt.name == 'iframe': iframe = nxt
                 if iframe and iframe.get('src') and 'youtube' in iframe.get('src'):
                     vid_url = iframe.get('src')
                     if vid_url.startswith('//'): vid_url = 'https:' + vid_url
+                
+                # 2. テキストリンク(aタグ)を探す
+                if not vid_url:
+                    a_tags = nxt.find_all('a') if hasattr(nxt, 'find_all') else []
+                    if nxt.name == 'a': a_tags.append(nxt)
+                    for a_tag in a_tags:
+                        href = a_tag.get('href', '')
+                        if 'youtube.com' in href or 'youtu.be' in href:
+                            vid_url = href
+                            break
+                            
+                if vid_url:
                     if is_interview and "interview" not in videos:
                         videos["interview"] = {"title": text, "url": vid_url}
                     if is_final and "final" not in videos:
@@ -352,7 +366,7 @@ def fetch_page_data(url):
 # ==========================================
 def main():
     now = get_jst_now()
-    print(f"[{now.strftime('%Y-%m-%d %H:%M:%S')}] 全自動監視処理（受付時間・費用抽出強化版）を開始します。")
+    print(f"[{now.strftime('%Y-%m-%d %H:%M:%S')}] 全自動監視処理（リンク形式動画抽出対応版）を開始します。")
     
     conn, is_initial_setup = init_db()
     c = conn.cursor()
@@ -394,11 +408,24 @@ def main():
 
     for url in urls_to_check:
         try:
-            c.execute("SELECT notified_video_final FROM tournaments WHERE url = ?", (url,))
+            c.execute("SELECT notified_video_final, event_datetime FROM tournaments WHERE url = ?", (url,))
             check_row = c.fetchone()
-            if check_row and check_row[0] == 1:
-                print(f"✅ 監視完了済(アクセススキップ): {url}")
-                continue
+            if check_row:
+                n_video_final = check_row[0]
+                event_dt_str = check_row[1]
+                
+                if n_video_final == 1:
+                    print(f"✅ 監視完了済(アクセススキップ): {url}")
+                    continue
+                
+                if event_dt_str:
+                    try:
+                        event_dt_db = datetime.strptime(event_dt_str, "%Y-%m-%d %H:%M:%S")
+                        if (now - event_dt_db).days > 60:
+                            print(f"✅ 監視完了済(期間経過スキップ): {url}")
+                            continue
+                    except Exception:
+                        pass
 
             print(f"🔍 ページ解析中: {url}")
             match_year = re.search(r"/at/(\d{4})_", url)
@@ -479,12 +506,10 @@ def main():
                     c.execute("UPDATE tournaments SET is_cancelled = 1 WHERE url = ?", (url,))
                     continue
 
-                # ★安全設計: 受付時間や参加費用の変更も静かにDBへ記録するよう修正
                 is_date_changed = (db_event_date != event_date_str or db_entry_str != entry_str)
                 is_info_changed = (db_reception != reception_time or db_fee != fee)
                 
                 if is_date_changed or is_info_changed:
-                    # 日程自体が変わった場合のみ通知フラグを立てる（費用などの微修正による誤爆を防ぐ）
                     if is_date_changed and not is_night_mode:
                         if not is_initial_setup and (db_event_date == "開催日未定" or db_entry_str == "エントリー日時未定"):
                             notify_queue.append({"type": "info", "header": "📢【大会情報更新】", "round_num": db_round, "location": db_loc, "event_date_str": event_date_str, "entry_str": entry_str, "url": url, "theme_color": theme_color})

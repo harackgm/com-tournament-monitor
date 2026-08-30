@@ -92,7 +92,7 @@ def get_weather_advice(location_name):
     return "🎣 体調管理を万全にして大会に挑みましょう！優勝目指してファイトです！"
 
 # ==========================================
-# 1. データベース初期化
+# 1. データベース初期化 (★動画通知用のフラグ枠を2つ追加)
 # ==========================================
 def init_db():
     conn = sqlite3.connect(DB_PATH)
@@ -124,7 +124,9 @@ def init_db():
                 notified_event_1d INTEGER,
                 notified_just INTEGER,
                 notified_after_24h INTEGER,
-                notified_result INTEGER DEFAULT 0 
+                notified_result INTEGER DEFAULT 0,
+                notified_video_interview INTEGER DEFAULT 0,
+                notified_video_final INTEGER DEFAULT 0
             )
         """)
         conn.commit()
@@ -132,7 +134,13 @@ def init_db():
         column_names = [col[1] for col in columns]
         if "notified_result" not in column_names:
             c.execute("ALTER TABLE tournaments ADD COLUMN notified_result INTEGER DEFAULT 0")
-            conn.commit()
+        # ★新規追加: インタビュー動画用の記録枠
+        if "notified_video_interview" not in column_names:
+            c.execute("ALTER TABLE tournaments ADD COLUMN notified_video_interview INTEGER DEFAULT 0")
+        # ★新規追加: 決勝戦動画用の記録枠
+        if "notified_video_final" not in column_names:
+            c.execute("ALTER TABLE tournaments ADD COLUMN notified_video_final INTEGER DEFAULT 0")
+        conn.commit()
 
     return conn, is_initial_setup
 
@@ -200,14 +208,12 @@ def extract_fee(text):
     match = re.search(r"(?:参加費用|参加費|費用)[：:\s]*([\d,]+円[^\n]*|\d+,\d+円|\d+円)", text)
     return match.group(1).strip() if match else "情報参照"
 
-# ★新規修正：HTML構造を解析して順位・名前・写真を抽出する関数
 def extract_tournament_results_from_html(html_content):
     results = []
     if not html_content:
         return results
     
     soup = BeautifulSoup(html_content, "html.parser")
-    # h3, h4, pタグなどで順位の記載を探す
     pattern = r"^(優勝|[１1一]位|[２2二]位|[３3三]位)\s*(?:\[\d+\])?\s*([^/]+?)\s*/"
     
     for tag in soup.find_all(['h3', 'h4', 'p', 'div']):
@@ -218,21 +224,18 @@ def extract_tournament_results_from_html(html_content):
             name = m.group(2).strip()
             
             img_url = None
-            # 直後の兄弟要素（最大3つ先まで）から <img> タグを探す
             nxt = tag.find_next_sibling()
             count = 0
             while nxt and count < 3:
                 img = nxt.find('img') if hasattr(nxt, 'find') else None
                 if img and img.get('src'):
                     img_url = img.get('src')
-                    # 相対パスの場合は絶対パスに補完
                     if img_url.startswith('/'):
                         img_url = "https://www.kanritsuriba.com" + img_url
                     break
                 nxt = nxt.find_next_sibling()
                 count += 1
                 
-            # 同一人物の重複追加を防ぐ
             if not any(r['name'] == name for r in results):
                 results.append({"rank": rank, "name": name, "image_url": img_url})
                 
@@ -311,7 +314,6 @@ def send_line_flex(header_title, round_num, location, event_date_str, entry_str,
     except Exception as e:
         print(f"LINE送信エラー: {e}")
 
-# ★新規修正：大会結果専用のカルーセル通知作成関数（写真表示対応）
 def send_result_line_flex(header_title, round_num, location, results, page_url, theme_color):
     if not LINE_CHANNEL_ACCESS_TOKEN or not LINE_USER_ID:
         return
@@ -319,23 +321,21 @@ def send_result_line_flex(header_title, round_num, location, results, page_url, 
     headers = {"Content-Type": "application/json", "Authorization": f"Bearer {LINE_CHANNEL_ACCESS_TOKEN}"}
     
     bubbles = []
-    # LINEのカルーセルは最大10件まで
     for res in results[:10]:
         rank = res['rank']
         name = res['name']
         img_url = res.get('image_url')
         
-        # 順位に応じて色とアイコン絵文字を変更
         bg_color = theme_color
         icon_emoji = "🏅"
         if "優勝" in rank or "1" in rank or "１" in rank:
-            bg_color = "#D4AF37" # 金
+            bg_color = "#D4AF37"
             icon_emoji = "🏆"
         elif "2" in rank or "２" in rank:
-            bg_color = "#C0C0C0" # 銀
+            bg_color = "#C0C0C0"
             icon_emoji = "🥈"
         elif "3" in rank or "３" in rank:
-            bg_color = "#CD7F32" # 銅
+            bg_color = "#CD7F32"
             icon_emoji = "🥉"
 
         bubble = {
@@ -358,7 +358,6 @@ def send_result_line_flex(header_title, round_num, location, results, page_url, 
             }
         }
         
-        # 画像URLが抽出できていればhero枠（ヘッダー上部のメイン画像）に追加
         if img_url:
             bubble["hero"] = {
                 "type": "image",
@@ -367,7 +366,6 @@ def send_result_line_flex(header_title, round_num, location, results, page_url, 
                 "aspectRatio": "4:3",
                 "aspectMode": "cover"
             }
-            # 写真がある場合は本文の巨大絵文字アイコンは省略してスッキリさせる
             bubble["body"]["contents"].pop(0)
 
         bubbles.append(bubble)
@@ -396,7 +394,6 @@ def send_simple_text(text_message):
     except Exception as e:
         pass
 
-# ★新規修正：テキストだけでなくHTMLソース全体も返すように変更
 def fetch_page_data(url):
     res = fetch_url(url)
     if res and res.status_code == 200:
@@ -415,7 +412,7 @@ def fetch_page_data(url):
 # ==========================================
 def main():
     now = get_jst_now()
-    print(f"[{now.strftime('%Y-%m-%d %H:%M:%S')}] 全自動監視処理（大会結果写真通知・完全版）を開始します。")
+    print(f"[{now.strftime('%Y-%m-%d %H:%M:%S')}] 全自動監視処理（動画通知枠追加準備版）を開始します。")
     
     conn, is_initial_setup = init_db()
     c = conn.cursor()
@@ -431,6 +428,7 @@ def main():
     urls_to_check = []
     for year in target_years:
         tag_url = f"https://www.kanritsuriba.com/at/tag/areatournament{year}/"
+        print(f"🔍 一覧ページ取得中: {tag_url}")
         res = fetch_url(tag_url)
         if not res: continue
         try:
@@ -445,6 +443,8 @@ def main():
             pass
 
     urls_to_check = list(set(urls_to_check))
+    print(f"📊 チェック対象URL数: {len(urls_to_check)}件")
+
     notify_queue = []
     db_updates = []
 
@@ -454,7 +454,6 @@ def main():
             url_year = int(match_year.group(1)) if match_year else current_year
 
             time.sleep(0.5)
-            # ★テキストとHTMLの両方を取得
             text_p1, html_p1 = fetch_page_data(url)
             sub_url = url.rstrip("/") + "/2/"
             time.sleep(0.5)
@@ -480,11 +479,11 @@ def main():
             cancel_keywords = ["見送る", "中止", "延期", "順延", "取りやめ", "開催を見送"]
             is_cancelled = 1 if any(kw in combined_text for kw in cancel_keywords) else 0
 
-            # ★HTMLを解析して大会結果と画像を抽出
             results_data = extract_tournament_results_from_html(combined_html)
 
             c.execute("PRAGMA table_info(tournaments)")
-            if len(c.fetchall()) < 19: continue
+            # ★カラム数が21（元18 + 結果1 + 動画2）に達していない場合はDB更新待ちとしてスキップ
+            if len(c.fetchall()) < 21: continue
 
             c.execute("SELECT * FROM tournaments WHERE url = ?", (url,))
             row = c.fetchone()
@@ -493,16 +492,17 @@ def main():
                 new_notified_flag = 0 if (is_night_mode and not is_initial_setup) else 1
                 c.execute(
                     """INSERT INTO tournaments 
-                    (url, round_num, location, event_date, event_datetime, entry_datetime, entry_str, reception_time, fee, original_text, is_cancelled, notified_new, notified_1d, notified_1h, notified_15m, notified_event_1d, notified_just, notified_after_24h, notified_result)
-                    VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, 0, 0, 0, 0, 0, 0, 0)""",
+                    (url, round_num, location, event_date, event_datetime, entry_datetime, entry_str, reception_time, fee, original_text, is_cancelled, notified_new, notified_1d, notified_1h, notified_15m, notified_event_1d, notified_just, notified_after_24h, notified_result, notified_video_interview, notified_video_final)
+                    VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, 0, 0, 0, 0, 0, 0, 0, 0, 0)""",
                     (url, round_num, location, event_date_str, event_dt.strftime("%Y-%m-%d %H:%M:%S") if event_dt else None, entry_dt.strftime("%Y-%m-%d %H:%M:%S") if entry_dt else None, entry_str, reception_time, fee, combined_text, is_cancelled, new_notified_flag)
                 )
                 if not is_initial_setup and not is_night_mode:
                     notify_queue.append({"type": "info", "header": "🆕【新規大会開催予定】", "round_num": round_num, "location": location, "event_date_str": event_date_str, "entry_str": entry_str, "url": url, "theme_color": theme_color})
             else:
-                (db_url, db_round, db_loc, db_event_date, db_event_dt_str, db_entry_dt_str, db_entry_str, db_reception, db_fee, db_text, db_cancelled, n_new, n_1d, n_1h, n_15m, n_event_1d, n_just, n_after_24h, n_result) = row
+                # ★行データの受け取り枠も2つ追加
+                (db_url, db_round, db_loc, db_event_date, db_event_dt_str, db_entry_dt_str, db_entry_str, db_reception, db_fee, db_text, db_cancelled, n_new, n_1d, n_1h, n_15m, n_event_1d, n_just, n_after_24h, n_result, n_video_int, n_video_fin) = row
 
-                # 🏆 大会結果の通知判定（安全装置付き）
+                # 🏆 大会結果の通知判定
                 if results_data and n_result == 0:
                     days_since_event = (now - event_dt).days if event_dt else 999
                     if days_since_event > 14:
@@ -571,7 +571,6 @@ def main():
         except Exception as e:
             pass
 
-    # ★安全装置の適用と送信処理の振り分け
     if not is_initial_setup and notify_queue:
         if len(notify_queue) > MAX_NOTIFY_LIMIT:
             send_simple_text("⚠️【システム通知】多数の新着・更新を検知したため連続送信をストップしました。サイトをご確認ください。")

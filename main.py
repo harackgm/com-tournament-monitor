@@ -92,7 +92,7 @@ def get_weather_advice(location_name):
     return "🎣 体調管理を万全にして大会に挑みましょう！優勝目指してファイトです！"
 
 # ==========================================
-# 1. データベース初期化 (★動画通知用のフラグ枠を2つ追加)
+# 1. データベース初期化
 # ==========================================
 def init_db():
     conn = sqlite3.connect(DB_PATH)
@@ -134,10 +134,8 @@ def init_db():
         column_names = [col[1] for col in columns]
         if "notified_result" not in column_names:
             c.execute("ALTER TABLE tournaments ADD COLUMN notified_result INTEGER DEFAULT 0")
-        # ★新規追加: インタビュー動画用の記録枠
         if "notified_video_interview" not in column_names:
             c.execute("ALTER TABLE tournaments ADD COLUMN notified_video_interview INTEGER DEFAULT 0")
-        # ★新規追加: 決勝戦動画用の記録枠
         if "notified_video_final" not in column_names:
             c.execute("ALTER TABLE tournaments ADD COLUMN notified_video_final INTEGER DEFAULT 0")
         conn.commit()
@@ -210,19 +208,15 @@ def extract_fee(text):
 
 def extract_tournament_results_from_html(html_content):
     results = []
-    if not html_content:
-        return results
-    
+    if not html_content: return results
     soup = BeautifulSoup(html_content, "html.parser")
     pattern = r"^(優勝|[１1一]位|[２2二]位|[３3三]位)\s*(?:\[\d+\])?\s*([^/]+?)\s*/"
-    
     for tag in soup.find_all(['h3', 'h4', 'p', 'div']):
         text = tag.get_text(strip=True)
         m = re.search(pattern, text)
         if m:
             rank = m.group(1).strip()
             name = m.group(2).strip()
-            
             img_url = None
             nxt = tag.find_next_sibling()
             count = 0
@@ -230,169 +224,118 @@ def extract_tournament_results_from_html(html_content):
                 img = nxt.find('img') if hasattr(nxt, 'find') else None
                 if img and img.get('src'):
                     img_url = img.get('src')
-                    if img_url.startswith('/'):
-                        img_url = "https://www.kanritsuriba.com" + img_url
+                    if img_url.startswith('/'): img_url = "https://www.kanritsuriba.com" + img_url
                     break
                 nxt = nxt.find_next_sibling()
                 count += 1
-                
             if not any(r['name'] == name for r in results):
                 results.append({"rank": rank, "name": name, "image_url": img_url})
-                
     return results
+
+# ★新規追加：動画（インタビュー・決勝戦）の抽出
+def extract_videos_from_html(html_content):
+    videos = {}
+    if not html_content: return videos
+    soup = BeautifulSoup(html_content, "html.parser")
+    
+    for tag in soup.find_all(['h3', 'h4', 'h2']):
+        text = tag.get_text(strip=True)
+        is_interview = "インタビュー" in text
+        is_final = "決勝戦" in text
+        
+        if is_interview or is_final:
+            nxt = tag.find_next_sibling()
+            count = 0
+            while nxt and count < 3:
+                iframe = nxt.find('iframe') if hasattr(nxt, 'find') else None
+                if not iframe and nxt.name == 'iframe': iframe = nxt
+                if iframe and iframe.get('src') and 'youtube' in iframe.get('src'):
+                    vid_url = iframe.get('src')
+                    if vid_url.startswith('//'): vid_url = 'https:' + vid_url
+                    if is_interview and "interview" not in videos:
+                        videos["interview"] = {"title": text, "url": vid_url}
+                    if is_final and "final" not in videos:
+                        videos["final"] = {"title": text, "url": vid_url}
+                    break
+                nxt = nxt.find_next_sibling()
+                count += 1
+    return videos
 
 # ==========================================
 # LINE Push Message (Flex Message カルーセル)
 # ==========================================
 def send_line_flex(header_title, round_num, location, event_date_str, entry_str, page_url, theme_color, extra_info=None):
-    if not LINE_CHANNEL_ACCESS_TOKEN or not LINE_USER_ID:
-        return
+    if not LINE_CHANNEL_ACCESS_TOKEN or not LINE_USER_ID: return
     url = "https://api.line.me/v2/bot/message/push"
     headers = {"Content-Type": "application/json", "Authorization": f"Bearer {LINE_CHANNEL_ACCESS_TOKEN}"}
     body_contents = [
         {"type": "text", "text": f"第{round_num}戦", "weight": "bold", "size": "xl", "color": "#333333"},
         {"type": "text", "text": f"{location}大会", "weight": "bold", "size": "md", "color": "#555555", "wrap": True},
         {"type": "separator"},
-        {
-            "type": "box", "layout": "vertical", "spacing": "xs",
-            "contents": [
-                {"type": "text", "text": "📅 大会開催日", "size": "xs", "color": "#888888"},
-                {"type": "text", "text": event_date_str, "size": "xl", "color": "#333333"},
-            ],
-        },
-        {
-            "type": "box", "layout": "vertical", "spacing": "xs",
-            "contents": [
-                {"type": "text", "text": "⏰ エントリー開始日時", "size": "xs", "color": "#888888"},
-                {"type": "text", "text": entry_str, "size": "xl", "color": "#E53935"},
-            ],
-        },
+        {"type": "box", "layout": "vertical", "spacing": "xs", "contents": [{"type": "text", "text": "📅 大会開催日", "size": "xs", "color": "#888888"}, {"type": "text", "text": event_date_str, "size": "xl", "color": "#333333"}]},
+        {"type": "box", "layout": "vertical", "spacing": "xs", "contents": [{"type": "text", "text": "⏰ エントリー開始日時", "size": "xs", "color": "#888888"}, {"type": "text", "text": entry_str, "size": "xl", "color": "#E53935"}]}
     ]
-
     if extra_info:
         body_contents.append({"type": "separator"})
-        body_contents.append({
-            "type": "box", "layout": "vertical", "spacing": "xs",
-            "contents": [
-                {"type": "text", "text": f"📋 受付時間: {extra_info.get('reception', '情報参照')}", "size": "sm", "color": "#555555"},
-                {"type": "text", "text": f"💰 参加費用: {extra_info.get('fee', '情報参照')}", "size": "sm", "color": "#555555"},
-            ],
-        })
+        body_contents.append({"type": "box", "layout": "vertical", "spacing": "xs", "contents": [{"type": "text", "text": f"📋 受付時間: {extra_info.get('reception', '情報参照')}", "size": "sm", "color": "#555555"}, {"type": "text", "text": f"💰 参加費用: {extra_info.get('fee', '情報参照')}", "size": "sm", "color": "#555555"}]})
         if "weather_advice" in extra_info:
             body_contents.append({"type": "separator"})
-            body_contents.append({
-                "type": "box", "layout": "vertical", "spacing": "xs",
-                "contents": [
-                    {"type": "text", "text": "🌤 明日の天候・応援", "size": "xs", "color": "#888888"},
-                    {"type": "text", "text": extra_info["weather_advice"], "size": "sm", "color": "#333333", "wrap": True},
-                ],
-            })
+            body_contents.append({"type": "box", "layout": "vertical", "spacing": "xs", "contents": [{"type": "text", "text": "🌤 明日の天候・応援", "size": "xs", "color": "#888888"}, {"type": "text", "text": extra_info["weather_advice"], "size": "sm", "color": "#333333", "wrap": True}]})
 
-    flex_payload = {
-        "to": LINE_USER_ID,
-        "messages": [{
-            "type": "flex", "altText": f"【{header_title}】第{round_num}戦 {location}大会",
-            "contents": {
-                "type": "carousel",
-                "contents": [{
-                    "type": "bubble",
-                    "header": {
-                        "type": "box", "layout": "vertical", "backgroundColor": theme_color,
-                        "contents": [{"type": "text", "text": f"🎣 {header_title}", "color": "#FFFFFF", "weight": "bold", "size": "xs"}]
-                    },
-                    "body": {"type": "box", "layout": "vertical", "spacing": "md", "contents": body_contents},
-                    "footer": {
-                        "type": "box", "layout": "vertical",
-                        "contents": [{"type": "button", "action": {"type": "uri", "label": "🔗 詳細・エントリー", "uri": page_url}, "style": "primary", "color": theme_color}]
-                    },
-                }]
-            }
-        }]
-    }
-    try:
-        requests.post(url, headers=headers, json=flex_payload, timeout=TIMEOUT_SEC)
-    except Exception as e:
-        print(f"LINE送信エラー: {e}")
+    flex_payload = {"to": LINE_USER_ID, "messages": [{"type": "flex", "altText": f"【{header_title}】第{round_num}戦 {location}大会", "contents": {"type": "carousel", "contents": [{"type": "bubble", "header": {"type": "box", "layout": "vertical", "backgroundColor": theme_color, "contents": [{"type": "text", "text": f"🎣 {header_title}", "color": "#FFFFFF", "weight": "bold", "size": "xs"}]}, "body": {"type": "box", "layout": "vertical", "spacing": "md", "contents": body_contents}, "footer": {"type": "box", "layout": "vertical", "contents": [{"type": "button", "action": {"type": "uri", "label": "🔗 詳細・エントリー", "uri": page_url}, "style": "primary", "color": theme_color}]}}]}}]}
+    try: requests.post(url, headers=headers, json=flex_payload, timeout=TIMEOUT_SEC)
+    except Exception: pass
 
 def send_result_line_flex(header_title, round_num, location, results, page_url, theme_color):
-    if not LINE_CHANNEL_ACCESS_TOKEN or not LINE_USER_ID:
-        return
+    if not LINE_CHANNEL_ACCESS_TOKEN or not LINE_USER_ID: return
     url = "https://api.line.me/v2/bot/message/push"
     headers = {"Content-Type": "application/json", "Authorization": f"Bearer {LINE_CHANNEL_ACCESS_TOKEN}"}
-    
     bubbles = []
     for res in results[:10]:
         rank = res['rank']
         name = res['name']
         img_url = res.get('image_url')
-        
-        bg_color = theme_color
-        icon_emoji = "🏅"
-        if "優勝" in rank or "1" in rank or "１" in rank:
-            bg_color = "#D4AF37"
-            icon_emoji = "🏆"
-        elif "2" in rank or "２" in rank:
-            bg_color = "#C0C0C0"
-            icon_emoji = "🥈"
-        elif "3" in rank or "３" in rank:
-            bg_color = "#CD7F32"
-            icon_emoji = "🥉"
+        bg_color, icon_emoji = theme_color, "🏅"
+        if "優勝" in rank or "1" in rank or "１" in rank: bg_color, icon_emoji = "#D4AF37", "🏆"
+        elif "2" in rank or "２" in rank: bg_color, icon_emoji = "#C0C0C0", "🥈"
+        elif "3" in rank or "３" in rank: bg_color, icon_emoji = "#CD7F32", "🥉"
 
-        bubble = {
-            "type": "bubble",
-            "header": {
-                "type": "box", "layout": "vertical", "backgroundColor": bg_color,
-                "contents": [{"type": "text", "text": f"{rank}", "color": "#FFFFFF", "weight": "bold", "size": "md"}]
-            },
-            "body": {
-                "type": "box", "layout": "vertical", "alignItems": "center",
-                "contents": [
-                    {"type": "text", "text": icon_emoji, "size": "4xl", "margin": "md"},
-                    {"type": "text", "text": name, "weight": "bold", "size": "xl", "margin": "md", "color": "#333333", "wrap": True},
-                    {"type": "text", "text": f"第{round_num}戦 {location}", "size": "xs", "color": "#888888", "margin": "sm", "wrap": True}
-                ]
-            },
-            "footer": {
-                "type": "box", "layout": "vertical",
-                "contents": [{"type": "button", "action": {"type": "uri", "label": "🔗 結果詳細を見る", "uri": page_url}, "style": "primary", "color": bg_color}]
-            }
-        }
-        
+        bubble = {"type": "bubble", "header": {"type": "box", "layout": "vertical", "backgroundColor": bg_color, "contents": [{"type": "text", "text": f"{rank}", "color": "#FFFFFF", "weight": "bold", "size": "md"}]}, "body": {"type": "box", "layout": "vertical", "alignItems": "center", "contents": [{"type": "text", "text": icon_emoji, "size": "4xl", "margin": "md"}, {"type": "text", "text": name, "weight": "bold", "size": "xl", "margin": "md", "color": "#333333", "wrap": True}, {"type": "text", "text": f"第{round_num}戦 {location}", "size": "xs", "color": "#888888", "margin": "sm", "wrap": True}]}, "footer": {"type": "box", "layout": "vertical", "contents": [{"type": "button", "action": {"type": "uri", "label": "🔗 結果詳細を見る", "uri": page_url}, "style": "primary", "color": bg_color}]}}
         if img_url:
-            bubble["hero"] = {
-                "type": "image",
-                "url": img_url,
-                "size": "full",
-                "aspectRatio": "4:3",
-                "aspectMode": "cover"
-            }
+            bubble["hero"] = {"type": "image", "url": img_url, "size": "full", "aspectRatio": "4:3", "aspectMode": "cover"}
             bubble["body"]["contents"].pop(0)
-
         bubbles.append(bubble)
+    try: requests.post(url, headers=headers, json={"to": LINE_USER_ID, "messages": [{"type": "flex", "altText": f"【大会結果】第{round_num}戦 {location}", "contents": {"type": "carousel", "contents": bubbles}}]}, timeout=TIMEOUT_SEC)
+    except Exception: pass
 
-    flex_payload = {
-        "to": LINE_USER_ID,
-        "messages": [{
-            "type": "flex", "altText": f"【大会結果】第{round_num}戦 {location}",
-            "contents": {"type": "carousel", "contents": bubbles}
-        }]
-    }
-    try:
-        requests.post(url, headers=headers, json=flex_payload, timeout=TIMEOUT_SEC)
-        print(f"結果LINE送信成功: 第{round_num}戦")
-    except Exception as e:
-        print(f"結果LINE送信エラー: {e}")
-
-def send_simple_text(text_message):
-    if not LINE_CHANNEL_ACCESS_TOKEN or not LINE_USER_ID:
-        return
+# ★新規追加：動画用のカルーセル通知作成関数
+def send_video_line_flex(header_title, round_num, location, video_data, page_url, theme_color):
+    if not LINE_CHANNEL_ACCESS_TOKEN or not LINE_USER_ID: return
     url = "https://api.line.me/v2/bot/message/push"
     headers = {"Content-Type": "application/json", "Authorization": f"Bearer {LINE_CHANNEL_ACCESS_TOKEN}"}
-    payload = {"to": LINE_USER_ID, "messages": [{"type": "text", "text": text_message}]}
-    try:
-        requests.post(url, headers=headers, json=payload, timeout=TIMEOUT_SEC)
-    except Exception as e:
-        pass
+    
+    vid_title = video_data.get("title", "動画が公開されました")
+    vid_url = video_data.get("url", page_url)
+    
+    body_contents = [
+        {"type": "text", "text": f"第{round_num}戦", "weight": "bold", "size": "xl", "color": "#333333"},
+        {"type": "text", "text": f"{location}大会", "weight": "bold", "size": "md", "color": "#555555", "wrap": True},
+        {"type": "separator"},
+        {"type": "box", "layout": "vertical", "spacing": "xs", "margin": "md", "contents": [{"type": "text", "text": vid_title, "weight": "bold", "size": "sm", "color": "#E53935", "wrap": True}]}
+    ]
+    flex_payload = {
+        "to": LINE_USER_ID,
+        "messages": [{"type": "flex", "altText": f"{header_title} 第{round_num}戦 {location}", "contents": {"type": "bubble", "header": {"type": "box", "layout": "vertical", "backgroundColor": theme_color, "contents": [{"type": "text", "text": f"▶️ {header_title}", "color": "#FFFFFF", "weight": "bold", "size": "xs"}]}, "body": {"type": "box", "layout": "vertical", "spacing": "md", "contents": body_contents}, "footer": {"type": "box", "layout": "vertical", "spacing": "sm", "contents": [{"type": "button", "action": {"type": "uri", "label": "▶️ 動画を見る", "uri": vid_url}, "style": "primary", "color": "#D32F2F"}, {"type": "button", "action": {"type": "uri", "label": "🔗 大会ページへ", "uri": page_url}, "style": "secondary"}]}}}]
+    }
+    try: requests.post(url, headers=headers, json=flex_payload, timeout=TIMEOUT_SEC)
+    except Exception: pass
+
+def send_simple_text(text_message):
+    if not LINE_CHANNEL_ACCESS_TOKEN or not LINE_USER_ID: return
+    url = "https://api.line.me/v2/bot/message/push"
+    headers = {"Content-Type": "application/json", "Authorization": f"Bearer {LINE_CHANNEL_ACCESS_TOKEN}"}
+    try: requests.post(url, headers=headers, json={"to": LINE_USER_ID, "messages": [{"type": "text", "text": text_message}]}, timeout=TIMEOUT_SEC)
+    except Exception: pass
 
 def fetch_page_data(url):
     res = fetch_url(url)
@@ -400,11 +343,8 @@ def fetch_page_data(url):
         try:
             soup = BeautifulSoup(res.text, "html.parser")
             content_area = soup.find("div", class_="entry-content") or soup
-            text = content_area.get_text(separator=" ", strip=True)
-            html = str(content_area)
-            return text, html
-        except Exception:
-            pass
+            return content_area.get_text(separator=" ", strip=True), str(content_area)
+        except Exception: pass
     return "", ""
 
 # ==========================================
@@ -412,10 +352,16 @@ def fetch_page_data(url):
 # ==========================================
 def main():
     now = get_jst_now()
-    print(f"[{now.strftime('%Y-%m-%d %H:%M:%S')}] 全自動監視処理（動画通知枠追加準備版）を開始します。")
+    print(f"[{now.strftime('%Y-%m-%d %H:%M:%S')}] 全自動監視処理（最終完全版：動画通知＆監視終了搭載）を開始します。")
     
     conn, is_initial_setup = init_db()
     c = conn.cursor()
+
+    # DB準備状況のチェック
+    c.execute("PRAGMA table_info(tournaments)")
+    if len(c.fetchall()) < 21:
+        print("⚠️ データベースの準備が完了していません。")
+        return
 
     current_year = now.year
     is_night_mode = (now.hour >= NIGHT_MODE_START or now.hour < NIGHT_MODE_END)
@@ -439,8 +385,7 @@ def main():
                 href = a["href"]
                 full_url = href if href.startswith("http") else f"https://www.kanritsuriba.com{href}"
                 urls_to_check.append(full_url)
-        except Exception:
-            pass
+        except Exception: pass
 
     urls_to_check = list(set(urls_to_check))
     print(f"📊 チェック対象URL数: {len(urls_to_check)}件")
@@ -450,6 +395,14 @@ def main():
 
     for url in urls_to_check:
         try:
+            # ★超・省エネ機能：決勝戦動画まで通知済みの大会は、サイトへの通信をスキップして終了させる！
+            c.execute("SELECT notified_video_final FROM tournaments WHERE url = ?", (url,))
+            check_row = c.fetchone()
+            if check_row and check_row[0] == 1:
+                print(f"✅ 監視完了済(アクセススキップ): {url}")
+                continue
+
+            print(f"🔍 ページ解析中: {url}")
             match_year = re.search(r"/at/(\d{4})_", url)
             url_year = int(match_year.group(1)) if match_year else current_year
 
@@ -480,10 +433,7 @@ def main():
             is_cancelled = 1 if any(kw in combined_text for kw in cancel_keywords) else 0
 
             results_data = extract_tournament_results_from_html(combined_html)
-
-            c.execute("PRAGMA table_info(tournaments)")
-            # ★カラム数が21（元18 + 結果1 + 動画2）に達していない場合はDB更新待ちとしてスキップ
-            if len(c.fetchall()) < 21: continue
+            videos_data = extract_videos_from_html(combined_html) # ★動画の抽出
 
             c.execute("SELECT * FROM tournaments WHERE url = ?", (url,))
             row = c.fetchone()
@@ -499,8 +449,18 @@ def main():
                 if not is_initial_setup and not is_night_mode:
                     notify_queue.append({"type": "info", "header": "🆕【新規大会開催予定】", "round_num": round_num, "location": location, "event_date_str": event_date_str, "entry_str": entry_str, "url": url, "theme_color": theme_color})
             else:
-                # ★行データの受け取り枠も2つ追加
                 (db_url, db_round, db_loc, db_event_date, db_event_dt_str, db_entry_dt_str, db_entry_str, db_reception, db_fee, db_text, db_cancelled, n_new, n_1d, n_1h, n_15m, n_event_1d, n_just, n_after_24h, n_result, n_video_int, n_video_fin) = row
+
+                # 🎬 動画通知の判定（深夜は保留）
+                if "interview" in videos_data and n_video_int == 0:
+                    if not is_night_mode:
+                        notify_queue.append({"type": "video", "header": "🎤【優勝者インタビュー公開】", "round_num": db_round, "location": db_loc, "video_data": videos_data["interview"], "url": url, "theme_color": theme_color})
+                        db_updates.append(("UPDATE tournaments SET notified_video_interview = 1 WHERE url = ?", (url,)))
+                
+                if "final" in videos_data and n_video_fin == 0:
+                    if not is_night_mode:
+                        notify_queue.append({"type": "video", "header": "🎥【決勝戦 動画公開】", "round_num": db_round, "location": db_loc, "video_data": videos_data["final"], "url": url, "theme_color": theme_color})
+                        db_updates.append(("UPDATE tournaments SET notified_video_final = 1 WHERE url = ?", (url,)))
 
                 # 🏆 大会結果の通知判定
                 if results_data and n_result == 0:
@@ -509,10 +469,7 @@ def main():
                         db_updates.append(("UPDATE tournaments SET notified_result = 1 WHERE url = ?", (url,)))
                     else:
                         if not is_night_mode:
-                            notify_queue.append({
-                                "type": "result", "header": "🎊【大会結果発表！】", "round_num": db_round,
-                                "location": db_loc, "results": results_data, "url": url, "theme_color": theme_color
-                            })
+                            notify_queue.append({"type": "result", "header": "🎊【大会結果発表！】", "round_num": db_round, "location": db_loc, "results": results_data, "url": url, "theme_color": theme_color})
                             db_updates.append(("UPDATE tournaments SET notified_result = 1 WHERE url = ?", (url,)))
 
                 if n_new == 0 and not is_night_mode:
@@ -571,6 +528,7 @@ def main():
         except Exception as e:
             pass
 
+    # ★安全装置と送信処理の振り分け（動画通知追加）
     if not is_initial_setup and notify_queue:
         if len(notify_queue) > MAX_NOTIFY_LIMIT:
             send_simple_text("⚠️【システム通知】多数の新着・更新を検知したため連続送信をストップしました。サイトをご確認ください。")
@@ -578,6 +536,8 @@ def main():
             for item in notify_queue:
                 if item.get("type") == "result":
                     send_result_line_flex(item["header"], item["round_num"], item["location"], item["results"], item["url"], item["theme_color"])
+                elif item.get("type") == "video":
+                    send_video_line_flex(item["header"], item["round_num"], item["location"], item["video_data"], item["url"], item["theme_color"])
                 else:
                     send_line_flex(item["header"], item["round_num"], item["location"], item["event_date_str"], item["entry_str"], item["url"], item["theme_color"], item.get("extra_info"))
 

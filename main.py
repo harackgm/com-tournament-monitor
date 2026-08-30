@@ -198,12 +198,14 @@ def parse_entry_datetime(text, year):
             pass
     return None, "エントリー日時未定"
 
+# ★修正：受付時間の抽出強化 (【受 付】のような記号や空白に対応)
 def extract_reception_time(text):
-    match = re.search(r"(?:受付|受\s*付)[：:\s]*(\d{1,2}:\d{2}\s*[\~～-]\s*\d{1,2}:\d{2}|\d{1,2}:\d{2}\s*より|\d{1,2}:\d{2})", text)
+    match = re.search(r"【?受\s*付】?[：:\s]*(\d{1,2}[:：]\d{2}\s*[\~～\-]\s*\d{1,2}[:：]\d{2}|\d{1,2}[:：]\d{2}\s*より|\d{1,2}[:：]\d{2})", text)
     return match.group(1).strip() if match else "情報参照"
 
+# ★修正：参加費用の抽出強化 (【参加費用】や後ろの補足説明カッコに対応)
 def extract_fee(text):
-    match = re.search(r"(?:参加費用|参加費|費用)[：:\s]*([\d,]+円[^\n]*|\d+,\d+円|\d+円)", text)
+    match = re.search(r"【?(?:参加費用|参加費|費用)】?[：:\s]*([\d,]+円(?:\s*[\(（][^\)）]*[\)）])?)", text)
     return match.group(1).strip() if match else "情報参照"
 
 def extract_tournament_results_from_html(html_content):
@@ -232,7 +234,6 @@ def extract_tournament_results_from_html(html_content):
                 results.append({"rank": rank, "name": name, "image_url": img_url})
     return results
 
-# ★新規追加：動画（インタビュー・決勝戦）の抽出
 def extract_videos_from_html(html_content):
     videos = {}
     if not html_content: return videos
@@ -308,7 +309,6 @@ def send_result_line_flex(header_title, round_num, location, results, page_url, 
     try: requests.post(url, headers=headers, json={"to": LINE_USER_ID, "messages": [{"type": "flex", "altText": f"【大会結果】第{round_num}戦 {location}", "contents": {"type": "carousel", "contents": bubbles}}]}, timeout=TIMEOUT_SEC)
     except Exception: pass
 
-# ★新規追加：動画用のカルーセル通知作成関数
 def send_video_line_flex(header_title, round_num, location, video_data, page_url, theme_color):
     if not LINE_CHANNEL_ACCESS_TOKEN or not LINE_USER_ID: return
     url = "https://api.line.me/v2/bot/message/push"
@@ -352,12 +352,11 @@ def fetch_page_data(url):
 # ==========================================
 def main():
     now = get_jst_now()
-    print(f"[{now.strftime('%Y-%m-%d %H:%M:%S')}] 全自動監視処理（最終完全版：動画通知＆監視終了搭載）を開始します。")
+    print(f"[{now.strftime('%Y-%m-%d %H:%M:%S')}] 全自動監視処理（受付時間・費用抽出強化版）を開始します。")
     
     conn, is_initial_setup = init_db()
     c = conn.cursor()
 
-    # DB準備状況のチェック
     c.execute("PRAGMA table_info(tournaments)")
     if len(c.fetchall()) < 21:
         print("⚠️ データベースの準備が完了していません。")
@@ -395,7 +394,6 @@ def main():
 
     for url in urls_to_check:
         try:
-            # ★超・省エネ機能：決勝戦動画まで通知済みの大会は、サイトへの通信をスキップして終了させる！
             c.execute("SELECT notified_video_final FROM tournaments WHERE url = ?", (url,))
             check_row = c.fetchone()
             if check_row and check_row[0] == 1:
@@ -433,7 +431,7 @@ def main():
             is_cancelled = 1 if any(kw in combined_text for kw in cancel_keywords) else 0
 
             results_data = extract_tournament_results_from_html(combined_html)
-            videos_data = extract_videos_from_html(combined_html) # ★動画の抽出
+            videos_data = extract_videos_from_html(combined_html)
 
             c.execute("SELECT * FROM tournaments WHERE url = ?", (url,))
             row = c.fetchone()
@@ -451,7 +449,7 @@ def main():
             else:
                 (db_url, db_round, db_loc, db_event_date, db_event_dt_str, db_entry_dt_str, db_entry_str, db_reception, db_fee, db_text, db_cancelled, n_new, n_1d, n_1h, n_15m, n_event_1d, n_just, n_after_24h, n_result, n_video_int, n_video_fin) = row
 
-                # 🎬 動画通知の判定（深夜は保留）
+                # 🎬 動画通知の判定
                 if "interview" in videos_data and n_video_int == 0:
                     if not is_night_mode:
                         notify_queue.append({"type": "video", "header": "🎤【優勝者インタビュー公開】", "round_num": db_round, "location": db_loc, "video_data": videos_data["interview"], "url": url, "theme_color": theme_color})
@@ -481,11 +479,17 @@ def main():
                     c.execute("UPDATE tournaments SET is_cancelled = 1 WHERE url = ?", (url,))
                     continue
 
-                if db_event_date != event_date_str or db_entry_str != entry_str:
-                    if not is_night_mode:
+                # ★安全設計: 受付時間や参加費用の変更も静かにDBへ記録するよう修正
+                is_date_changed = (db_event_date != event_date_str or db_entry_str != entry_str)
+                is_info_changed = (db_reception != reception_time or db_fee != fee)
+                
+                if is_date_changed or is_info_changed:
+                    # 日程自体が変わった場合のみ通知フラグを立てる（費用などの微修正による誤爆を防ぐ）
+                    if is_date_changed and not is_night_mode:
                         if not is_initial_setup and (db_event_date == "開催日未定" or db_entry_str == "エントリー日時未定"):
                             notify_queue.append({"type": "info", "header": "📢【大会情報更新】", "round_num": db_round, "location": db_loc, "event_date_str": event_date_str, "entry_str": entry_str, "url": url, "theme_color": theme_color})
-                        c.execute("UPDATE tournaments SET event_date = ?, entry_datetime = ?, entry_str = ?, reception_time = ?, fee = ?, original_text = ? WHERE url = ?", (event_date_str, entry_dt.strftime("%Y-%m-%d %H:%M:%S") if entry_dt else None, entry_str, reception_time, fee, combined_text, url))
+                    
+                    c.execute("UPDATE tournaments SET event_date = ?, entry_datetime = ?, entry_str = ?, reception_time = ?, fee = ?, original_text = ? WHERE url = ?", (event_date_str, entry_dt.strftime("%Y-%m-%d %H:%M:%S") if entry_dt else None, entry_str, reception_time, fee, combined_text, url))
 
                 if entry_dt and is_cancelled == 0:
                     if entry_dt > now:
@@ -528,7 +532,6 @@ def main():
         except Exception as e:
             pass
 
-    # ★安全装置と送信処理の振り分け（動画通知追加）
     if not is_initial_setup and notify_queue:
         if len(notify_queue) > MAX_NOTIFY_LIMIT:
             send_simple_text("⚠️【システム通知】多数の新着・更新を検知したため連続送信をストップしました。サイトをご確認ください。")

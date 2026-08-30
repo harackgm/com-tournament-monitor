@@ -232,7 +232,20 @@ def extract_tournament_results_from_html(html_content):
                 results.append({"rank": rank, "name": name, "image_url": img_url})
     return results
 
-# ★修正：動画抽出ロジック（aタグのテキストリンクにも完全対応）
+# ★修正：YouTubeの埋め込みURL(embed)を普通の視聴URL(watch?v=)に自動変換するヘルパー
+def normalize_youtube_url(url_str):
+    if not url_str:
+        return url_str
+    # //www.youtube.com/... などの補完
+    if url_str.startswith("//"):
+        url_str = "https:" + url_str
+    # embed/動画ID を watch?v=動画ID へ変換
+    embed_match = re.search(r"youtube\.com/embed/([a-zA-Z0-9_-]+)", url_str)
+    if embed_match:
+        video_id = embed_match.group(1)
+        return f"https://www.youtube.com/watch?v={video_id}"
+    return url_str
+
 def extract_videos_from_html(html_content):
     videos = {}
     if not html_content: return videos
@@ -254,7 +267,6 @@ def extract_videos_from_html(html_content):
                 if not iframe and nxt.name == 'iframe': iframe = nxt
                 if iframe and iframe.get('src') and 'youtube' in iframe.get('src'):
                     vid_url = iframe.get('src')
-                    if vid_url.startswith('//'): vid_url = 'https:' + vid_url
                 
                 # 2. テキストリンク(aタグ)を探す
                 if not vid_url:
@@ -267,10 +279,12 @@ def extract_videos_from_html(html_content):
                             break
                             
                 if vid_url:
+                    # ★ここでYouTube URLを直接開ける標準形式に整形
+                    normalized_url = normalize_youtube_url(vid_url)
                     if is_interview and "interview" not in videos:
-                        videos["interview"] = {"title": text, "url": vid_url}
+                        videos["interview"] = {"title": text, "url": normalized_url}
                     if is_final and "final" not in videos:
-                        videos["final"] = {"title": text, "url": vid_url}
+                        videos["final"] = {"title": text, "url": normalized_url}
                     break
                 nxt = nxt.find_next_sibling()
                 count += 1
@@ -366,7 +380,7 @@ def fetch_page_data(url):
 # ==========================================
 def main():
     now = get_jst_now()
-    print(f"[{now.strftime('%Y-%m-%d %H:%M:%S')}] 全自動監視処理（リンク形式動画抽出対応版）を開始します。")
+    print(f"[{now.strftime('%Y-%m-%d %H:%M:%S')}] 全自動監視処理（YouTube URL自動修復版）を開始します。")
     
     conn, is_initial_setup = init_db()
     c = conn.cursor()
@@ -448,7 +462,7 @@ def main():
 
             event_dt, event_date_str = extract_event_date_info(combined_text, url_year)
             entry_dt, entry_str = parse_entry_datetime(text_p2, url_year)
-            if not entry_dt: entry_dt, entry_str = parse_entry_datetime(text_p1, url_year)
+            if not entry_dt: entry_str = parse_entry_datetime(text_p1, url_year)
 
             reception_time = extract_reception_time(combined_text)
             fee = extract_fee(combined_text)

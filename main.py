@@ -13,18 +13,18 @@ LINE_CHANNEL_ACCESS_TOKEN = os.environ.get("LINE_CHANNEL_ACCESS_TOKEN", "")
 LINE_USER_ID = os.environ.get("LINE_USER_ID", "")
 
 DB_PATH = "tournaments.db"
-MAX_NOTIFY_LIMIT = 5  # 大量通知ストッパー（安全装置）
+MAX_NOTIFY_LIMIT = 5  # 大量通知ストッパー
 TIMEOUT_SEC = 10  # 通信タイムアウト時間(10秒)
 
-# --- 大会前日リマインドの通知時間帯指定 (前夜18時〜22時の間へ前倒し改善) ---
+# --- 大会前日リマインドの通知時間帯指定 ---
 EVENT_1D_HOUR_START = 18
 EVENT_1D_HOUR_END = 22
 
 # --- 🌙 おやすみモード（深夜通知防止）設定 ---
-NIGHT_MODE_START = 23  # 23時以降は通知を保留
-NIGHT_MODE_END = 9     # 翌朝9時まで（8時59分まで）通知を保留
+NIGHT_MODE_START = 23
+NIGHT_MODE_END = 9
 
-# 主要釣り場の座標マッピング（天気API用）
+# 主要釣り場の座標マッピング
 LOCATION_COORDS = {
     "サンクチュアリ": (35.15, 136.52),
     "浜名湖": (34.72, 137.60),
@@ -43,7 +43,7 @@ def get_jst_now():
     return datetime.now(timezone.utc).astimezone(timezone(timedelta(hours=9))).replace(tzinfo=None)
 
 # ==========================================
-# 強化版 ネットワーク接続ヘルパー (自動リトライ＆ウェイト短縮版)
+# 強化版 ネットワーク接続ヘルパー
 # ==========================================
 def fetch_url(url, retries=3):
     headers = {
@@ -62,16 +62,12 @@ def fetch_url(url, retries=3):
             print(f"💡 リトライ待ち ({i+1}/{retries}回目, {wait_time}秒後): {url}")
             time.sleep(wait_time)
 
-# ==========================================
-# 天気自動取得＆アドバイス生成ロジック（Open-Meteo API）
-# ==========================================
 def get_weather_advice(location_name):
     lat, lon = 36.5, 139.8
     for name, coords in LOCATION_COORDS.items():
         if name in location_name:
             lat, lon = coords
             break
-
     try:
         api_url = f"https://api.open-meteo.com/v1/forecast?latitude={lat}&longitude={lon}&daily=weathercode,temperature_2m_max,precipitation_sum&timezone=Asia%2FTokyo"
         res = requests.get(api_url, timeout=5)
@@ -85,20 +81,18 @@ def get_weather_advice(location_name):
             if w_code in [51, 53, 55, 61, 63, 65, 80, 81, 82, 95, 96, 99] or (precip > 1.0):
                 advice = "🌧 雨の予報です。レインウェアと防水対策をお忘れなく！"
             elif max_temp >= 30:
-                advice = f"☀️ 最高気温{int(max_temp)}℃の猛暑予報です。熱中症対策と水分補給を万全に！"
+                advice = f"☀️ 最高気温{int(max_temp)}℃の猛暑予報です。熱中症対策を！"
             elif max_temp <= 10:
-                advice = f"❄️ 最高気温{int(max_temp)}℃の冷え込み予報です。十分な防寒対策をして挑みましょう！"
+                advice = f"❄️ 最高気温{int(max_temp)}℃の冷え込み予報です。防寒対策を！"
             else:
-                advice = f"🌤 予想最高気温は{int(max_temp)}℃です。絶好のコンディションで大会に臨みましょう！"
-
-            return f"{advice}\n🔥 日頃の練習の成果を発揮し、優勝を目指して全力を尽くしてください！応援しています！"
+                advice = f"🌤 予想最高気温は{int(max_temp)}℃です。絶好のコンディション！"
+            return f"{advice}\n🔥 日頃の練習の成果を発揮し、優勝を目指してください！"
     except Exception:
         pass
-
-    return "🎣 体調管理を万全にして大会に挑みましょう！日頃の練習成果を発揮して優勝目指してファイトです！"
+    return "🎣 体調管理を万全にして大会に挑みましょう！優勝目指してファイトです！"
 
 # ==========================================
-# 1. データベース初期化 (18カラム)
+# 1. データベース初期化 (★結果通知フラグを追加)
 # ==========================================
 def init_db():
     conn = sqlite3.connect(DB_PATH)
@@ -129,16 +123,21 @@ def init_db():
                 notified_15m INTEGER,
                 notified_event_1d INTEGER,
                 notified_just INTEGER,
-                notified_after_24h INTEGER
+                notified_after_24h INTEGER,
+                notified_result INTEGER DEFAULT 0 
             )
         """)
         conn.commit()
+    else:
+        # ★既存のDBがある場合、安全に結果通知フラグ(notified_result)だけを追記する
+        column_names = [col[1] for col in columns]
+        if "notified_result" not in column_names:
+            c.execute("ALTER TABLE tournaments ADD COLUMN notified_result INTEGER DEFAULT 0")
+            conn.commit()
+            print("🔧 データベースに「大会結果通知用」の枠（notified_result）を安全に追加しました。")
 
     return conn, is_initial_setup
 
-# ==========================================
-# 指定都道府県グループ別テーマカラー判定ロジック
-# ==========================================
 def get_theme_color(location_name):
     if any(kw in location_name for kw in ["栃木", "群馬", "キングフィッシャー", "上永野", "みどり", "なら山", "大芦", "増井", "宇都宮", "アメイズ", "中之沢", "赤城", "川場", "沼田", "宮城", "ベリーズ", "イワナ"]):
         return "#03A9F4"  
@@ -159,9 +158,6 @@ def get_theme_color(location_name):
     else:
         return "#607D8B"  
 
-# ==========================================
-# テキスト解析ヘルパー関数群
-# ==========================================
 def extract_event_date_info(text, year):
     match = re.search(r"(?:(\d{4})年)?\s*(\d{1,2})月(\d{1,2})日", text)
     if match:
@@ -349,7 +345,7 @@ def fetch_page_text(url):
 # ==========================================
 def main():
     now = get_jst_now()
-    print(f"[{now.strftime('%Y-%m-%d %H:%M:%S')}] 全自動監視処理（完全バグ修正・最適化版）を開始します。")
+    print(f"[{now.strftime('%Y-%m-%d %H:%M:%S')}] 全自動監視処理（大会結果枠追加準備版）を開始します。")
     
     conn, is_initial_setup = init_db()
     c = conn.cursor()
@@ -428,6 +424,12 @@ def main():
             cancel_keywords = ["見送る", "中止", "延期", "順延", "取りやめ", "開催を見送"]
             is_cancelled = 1 if any(kw in combined_text for kw in cancel_keywords) else 0
 
+            # ★安全のため、DB問い合わせ時にエラーが起きないよう '*' ではなく明示的にカラムを取得
+            c.execute("PRAGMA table_info(tournaments)")
+            col_info = c.fetchall()
+            if len(col_info) < 19:
+                continue # 万が一DB更新が完了していなければスキップ
+
             c.execute("SELECT * FROM tournaments WHERE url = ?", (url,))
             row = c.fetchone()
 
@@ -436,8 +438,8 @@ def main():
                 c.execute(
                     """
                     INSERT INTO tournaments 
-                    (url, round_num, location, event_date, event_datetime, entry_datetime, entry_str, reception_time, fee, original_text, is_cancelled, notified_new, notified_1d, notified_1h, notified_15m, notified_event_1d, notified_just, notified_after_24h)
-                    VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, 0, 0, 0, 0, 0, 0)
+                    (url, round_num, location, event_date, event_datetime, entry_datetime, entry_str, reception_time, fee, original_text, is_cancelled, notified_new, notified_1d, notified_1h, notified_15m, notified_event_1d, notified_just, notified_after_24h, notified_result)
+                    VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, 0, 0, 0, 0, 0, 0, 0)
                 """,
                     (
                         url, round_num, location, event_date_str,
@@ -455,7 +457,7 @@ def main():
             else:
                 (
                     db_url, db_round, db_loc, db_event_date, db_event_dt_str, db_entry_dt_str, db_entry_str,
-                    db_reception, db_fee, db_text, db_cancelled, n_new, n_1d, n_1h, n_15m, n_event_1d, n_just, n_after_24h
+                    db_reception, db_fee, db_text, db_cancelled, n_new, n_1d, n_1h, n_15m, n_event_1d, n_just, n_after_24h, n_result
                 ) = row
 
                 if n_new == 0 and not is_night_mode:
@@ -480,7 +482,6 @@ def main():
                                 "header": "📢【大会情報更新】", "round_num": db_round, "location": db_loc,
                                 "event_date_str": event_date_str, "entry_str": entry_str, "url": url, "theme_color": theme_color,
                             })
-                        # ★修正: 深夜（おやすみモード中）はDBの更新処理も保留し、朝に通知と一緒に確実に実行させる
                         c.execute(
                             "UPDATE tournaments SET event_date = ?, entry_datetime = ?, entry_str = ?, reception_time = ?, fee = ?, original_text = ? WHERE url = ?",
                             (event_date_str, entry_dt.strftime("%Y-%m-%d %H:%M:%S") if entry_dt else None, entry_str, reception_time, fee, combined_text, url),

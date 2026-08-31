@@ -65,7 +65,7 @@ def fetch_url(url, retries=3):
 
 def get_weather_advice(location_name):
     lat, lon = 36.5, 139.8
-    for name, coords in LOCATION_COORitems():
+    for name, coords in LOCATION_COORDS.items():
         if name in location_name:
             lat, lon = coords
             break
@@ -221,7 +221,7 @@ def extract_fee(text):
     match = re.search(r"【?(?:参加費用|参加費|費用)】?[：:\s]*([\d,]+円(?:\s*[\(（][^\)）]*[\)）])?)", text)
     return match.group(1).strip() if match else "情報参照"
 
-# ★高精度抽出：リード文を避けて確実に見出しへジャンプするText Fragmentを生成
+# ★修正：リード文誤爆を完全に回避するため、「見出しの文章そのもの」をジャンプ指定文字列にする
 def extract_tournament_results_from_html(html_content):
     results = []
     if not html_content: return results
@@ -232,7 +232,7 @@ def extract_tournament_results_from_html(html_content):
     for tag in soup.find_all(['h3', 'h4']):
         exact_heading = tag.get_text(strip=True)
         
-        # 誤検知防止：「優勝者インタビュー」などはスキップ
+        # 誤検知防止：「インタビュー」などの文字があればスキップ
         if "インタビュー" in exact_heading or "動画" in exact_heading:
             continue
 
@@ -255,10 +255,9 @@ def extract_tournament_results_from_html(html_content):
             if not name or len(name) < 2 or "タックル" in name or "コメント" in name:
                 continue
                 
-            # ★改善点: 冒頭のリード文への誤爆を防ぐため、見出しの【日本語の連続部分】を丸ごと切り出す
-            # 例: 「優勝[1]齋藤篤史選手のタックル Saitou Atsushi」 -> 「優勝[1]齋藤篤史選手のタックル」となる
-            jump_match = re.search(r"^[^a-zA-Z]+", exact_heading)
-            jump_target = jump_match.group(0).strip() if jump_match else exact_heading
+            # ★テキストフラグメント用：見出しの文章を丸ごと取得（例: 優勝[1]齋藤篤史選手のタックル）
+            # 長すぎるとエラーになるため最初の20文字のみをターゲットにする
+            jump_target = exact_heading[:20]
 
             img_url = None
             nxt = tag.find_next_sibling()
@@ -388,7 +387,7 @@ def send_line_flex(header_title, round_num, location, event_date_str, entry_str,
     try: requests.post(url, headers=headers, json=flex_payload, timeout=TIMEOUT_SEC)
     except Exception: pass
 
-# ★修正：ユニークな見出しテキストを使ってリード文を回避し、確実にジャンプ
+# ★修正：生成した「完全な見出し」をURLエンコードして確実にスクロールさせる
 def send_result_line_flex(header_title, round_num, location, results, page_url, theme_color):
     if not LINE_CHANNEL_ACCESS_TOKEN or not LINE_USER_ID: return
     url = "https://api.line.me/v2/bot/message/push"
@@ -417,7 +416,7 @@ def send_result_line_flex(header_title, round_num, location, results, page_url, 
             body_contents.append({"type": "separator", "margin": "md"})
             body_contents.append({"type": "text", "text": res['congrat_msg'], "size": "xs", "color": "#D32F2F", "weight": "bold", "margin": "md", "wrap": True})
 
-        # 抽出した「見出し固有の文字列（例: 優勝[1]齋藤篤史選手のタックル）」をText Fragmentに指定し、誤爆を完全防止
+        # Text Fragmentを使用して、見出しに確実にジャンプさせる
         jump_target = res.get('jump_target', name)
         target_url = f"{page_url}#:~:text={urllib.parse.quote(jump_target)}"
 
@@ -483,7 +482,7 @@ def fetch_page_data(url):
     return "", ""
 
 # ==========================================
-# メイン監視処理（本番運用モード・DBロック回避対応）
+# メイン監視処理（本番運用モード・重複通知完全排除版）
 # ==========================================
 def main():
     now = get_jst_now()
@@ -680,6 +679,17 @@ def main():
 
         except Exception as e:
             pass
+
+    # ★二重通知防止：通知キューの中で同じ大会のデータがダブっていたら弾く
+    unique_notify_queue = []
+    seen = set()
+    for item in notify_queue:
+        identifier = f"{item.get('type')}_{item.get('round_num')}_{item.get('location')}"
+        if identifier not in seen:
+            seen.add(identifier)
+            unique_notify_queue.append(item)
+            
+    notify_queue = unique_notify_queue
 
     for query, params in db_updates:
         c.execute(query, params)

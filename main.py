@@ -92,7 +92,7 @@ def get_weather_advice(location_name):
     return "🎣 体調管理を万全にして大会に挑みましょう！優勝目指してファイトです！"
 
 # ==========================================
-# 1. データベース初期化 (優勝者独立記録用winner_name追加)
+# 1. データベース初期化
 # ==========================================
 def init_db():
     conn = sqlite3.connect(DB_PATH)
@@ -257,7 +257,6 @@ def extract_tournament_results_from_html(html_content):
                 
     return results
 
-# ★高精度：優勝回数・連続優勝判定（独自カラムwinner_nameを使用）
 def get_winner_congratulations_message(winner_name, current_round_num):
     clean_winner_name = re.sub(r"[\s\u3000/・\-]", "", winner_name)
 
@@ -301,6 +300,7 @@ def normalize_youtube_url(url_str):
         return f"https://www.youtube.com/watch?v={video_id}"
     return url_str
 
+# ★修正：実在するYouTube動画URLの検出を必須条件化（偽検知の排除）
 def extract_videos_from_html(html_content):
     videos = {}
     if not html_content: return videos
@@ -330,6 +330,7 @@ def extract_videos_from_html(html_content):
                             vid_url = href
                             break
                             
+                # ★動画URLが確実に取得できた場合のみ登録（文字だけの見出しは無視）
                 if vid_url:
                     normalized_url = normalize_youtube_url(vid_url)
                     if is_interview and "interview" not in videos:
@@ -454,7 +455,7 @@ def fetch_page_data(url):
 # ==========================================
 def main():
     now = get_jst_now()
-    print(f"[{now.strftime('%Y-%m-%d %H:%M:%S')}] 全自動監視処理（全優勝者DBスキャン機能対応版）を開始します。")
+    print(f"[{now.strftime('%Y-%m-%d %H:%M:%S')}] 全自動監視処理（過去動画誤通知完全防止版）を開始します。")
     
     conn, is_initial_setup = init_db()
     c = conn.cursor()
@@ -529,7 +530,6 @@ def main():
             results_data = extract_tournament_results_from_html(combined_html)
             videos_data = extract_videos_from_html(combined_html)
 
-            # 優勝者の氏名を切り出し
             winner_name = ""
             for r in results_data:
                 if r['rank'] == "優勝":
@@ -540,8 +540,8 @@ def main():
             row = c.fetchone()
 
             if not row:
-                # 新規登録時はサンクチュアリ(第19戦)等の最新結果のみ通知対象とし、古い大会は既読化
                 days_since_event = (now - event_dt).days if event_dt else 999
+                # 直近14日以内の結果のみ未通知とし、動画通知フラグは安全のため一律1(既読)で登録
                 result_flag = 0 if days_since_event <= 14 else 1
 
                 c.execute(
@@ -557,11 +557,11 @@ def main():
             else:
                 (db_url, db_round, db_loc, db_event_date, db_event_dt_str, db_entry_dt_str, db_entry_str, db_reception, db_fee, db_text, db_cancelled, n_new, n_1d, n_1h, n_15m, n_event_1d, n_just, n_after_24h, n_result, n_video_int, n_video_fin, db_winner) = row
 
-                # 優勝者名の更新記録
+                # 優勝者名の追加記録
                 if winner_name and db_winner != winner_name:
                     c.execute("UPDATE tournaments SET winner_name = ? WHERE url = ?", (winner_name, url))
 
-                # 🎬 動画通知の判定
+                # 🎬 動画通知の判定（実在する動画URLがある場合のみ）
                 if "interview" in videos_data and n_video_int == 0:
                     if not is_night_mode:
                         notify_queue.append({"type": "video", "header": "🎤【優勝者インタビュー公開】", "round_num": db_round, "location": db_loc, "video_data": videos_data["interview"], "url": url, "theme_color": theme_color})

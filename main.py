@@ -221,6 +221,7 @@ def extract_fee(text):
     match = re.search(r"【?(?:参加費用|参加費|費用)】?[：:\s]*([\d,]+円(?:\s*[\(（][^\)）]*[\)）])?)", text)
     return match.group(1).strip() if match else "情報参照"
 
+# ★修正点①：ジャンプ精度の向上と、インタビュー誤検知の排除
 def extract_tournament_results_from_html(html_content):
     results = []
     if not html_content: return results
@@ -230,6 +231,11 @@ def extract_tournament_results_from_html(html_content):
     
     for tag in soup.find_all(['h3', 'h4']):
         text = tag.get_text(strip=True)
+        
+        # 誤検知防止：「優勝者インタビュー」などはスキップ
+        if "インタビュー" in text or "動画" in text:
+            continue
+
         if rank_pattern.match(text):
             rank_match = rank_pattern.match(text)
             rank = rank_match.group(1)
@@ -249,6 +255,10 @@ def extract_tournament_results_from_html(html_content):
             if not name or len(name) < 2 or "タックル" in name or "コメント" in name:
                 continue
                 
+            # ★追加：リード文を回避するため、「順位[ゼッケン]名前」の部分までを丸ごと切り出す
+            jump_text_match = re.search(r"^(優勝|[1-3１-３一二三]位)\s*(?:\[\d+\])?\s*[^\s/【選手]+", text)
+            jump_text = jump_text_match.group(0).strip() if jump_text_match else name
+
             img_url = None
             nxt = tag.find_next_sibling()
             count = 0
@@ -265,7 +275,7 @@ def extract_tournament_results_from_html(html_content):
                 count += 1
                 
             if not any(r['name'] == name for r in results):
-                results.append({"rank": rank, "name": name, "image_url": img_url})
+                results.append({"rank": rank, "name": name, "image_url": img_url, "jump_text": jump_text})
                 
     return results
 
@@ -377,6 +387,7 @@ def send_line_flex(header_title, round_num, location, event_date_str, entry_str,
     try: requests.post(url, headers=headers, json=flex_payload, timeout=TIMEOUT_SEC)
     except Exception: pass
 
+# ★修正点②：ジャンプ先URLを「順位[番号]名前」に最適化
 def send_result_line_flex(header_title, round_num, location, results, page_url, theme_color):
     if not LINE_CHANNEL_ACCESS_TOKEN or not LINE_USER_ID: return
     url = "https://api.line.me/v2/bot/message/push"
@@ -405,8 +416,9 @@ def send_result_line_flex(header_title, round_num, location, results, page_url, 
             body_contents.append({"type": "separator", "margin": "md"})
             body_contents.append({"type": "text", "text": res['congrat_msg'], "size": "xs", "color": "#D32F2F", "weight": "bold", "margin": "md", "wrap": True})
 
-        # Text FragmentによるダイレクトジャンプURL生成
-        target_url = f"{page_url}#:~:text={urllib.parse.quote(name)}"
+        # 抽出した「順位＋ゼッケン＋名前」を使用してジャンプURLを生成（リード文の誤爆を防止）
+        jump_text = res.get('jump_text', name)
+        target_url = f"{page_url}#:~:text={urllib.parse.quote(jump_text)}"
 
         bubble = {
             "type": "bubble", 
@@ -470,19 +482,20 @@ def fetch_page_data(url):
     return "", ""
 
 # ==========================================
-# メイン監視処理（ダイレクトジャンプ・テスト配信用）
+# メイン監視処理（ダイレクトジャンプ・テスト再配信用）
 # ==========================================
 def main():
     now = get_jst_now()
-    print(f"[{now.strftime('%Y-%m-%d %H:%M:%S')}] 全自動監視処理（ダイレクトジャンプ・テスト配信モード）を開始します。")
+    print(f"[{now.strftime('%Y-%m-%d %H:%M:%S')}] 全自動監視処理（ジャンプ精度向上・テスト再配信モード）を開始します。")
     
     conn, is_initial_setup = init_db()
     c = conn.cursor()
 
-    # ★テスト用：第19戦の通知フラグを強制的に未送信(0)に戻す
+    # ★テスト用：第19戦の通知フラグを強制的に未送信(0)に戻し、誤検知データを削除
     c.execute("UPDATE tournaments SET notified_result = 0 WHERE round_num = '19'")
+    c.execute("DELETE FROM tournament_winners WHERE player_name = '者インタビュー'")
     conn.commit()
-    print("🧪 【テスト発火】第19戦（サンクチュアリ）の結果通知フラグをリセットしました。")
+    print("🧪 【テスト発火】第19戦の通知フラグをリセットしました（ジャンプ精度確認用）。")
 
     current_year = now.year
     is_night_mode = False # テスト実行のためおやすみモードを強制解除

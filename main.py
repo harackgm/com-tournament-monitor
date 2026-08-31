@@ -92,7 +92,7 @@ def get_weather_advice(location_name):
     return "🎣 体調管理を万全にして大会に挑みましょう！優勝目指してファイトです！"
 
 # ==========================================
-# 1. データベース初期化
+# 1. データベース初期化 (優勝者独立記録用winner_name追加)
 # ==========================================
 def init_db():
     conn = sqlite3.connect(DB_PATH)
@@ -126,7 +126,8 @@ def init_db():
                 notified_after_24h INTEGER,
                 notified_result INTEGER DEFAULT 0,
                 notified_video_interview INTEGER DEFAULT 0,
-                notified_video_final INTEGER DEFAULT 0
+                notified_video_final INTEGER DEFAULT 0,
+                winner_name TEXT DEFAULT ''
             )
         """)
         conn.commit()
@@ -138,6 +139,8 @@ def init_db():
             c.execute("ALTER TABLE tournaments ADD COLUMN notified_video_interview INTEGER DEFAULT 0")
         if "notified_video_final" not in column_names:
             c.execute("ALTER TABLE tournaments ADD COLUMN notified_video_final INTEGER DEFAULT 0")
+        if "winner_name" not in column_names:
+            c.execute("ALTER TABLE tournaments ADD COLUMN winner_name TEXT DEFAULT ''")
         conn.commit()
 
     return conn, is_initial_setup
@@ -210,36 +213,88 @@ def extract_tournament_results_from_html(html_content):
     results = []
     if not html_content: return results
     soup = BeautifulSoup(html_content, "html.parser")
-    pattern = r"^(優勝|[１1一]位|[２2二]位|[３3三]位)\s*(?:\[\d+\])?\s*([^/]+?)\s*/"
-    for tag in soup.find_all(['h3', 'h4', 'p', 'div']):
+    
+    rank_pattern = re.compile(r"^(優勝|[1-3１-３一二三]位)")
+    
+    for tag in soup.find_all(['h3', 'h4']):
         text = tag.get_text(strip=True)
-        m = re.search(pattern, text)
-        if m:
-            rank = m.group(1).strip()
-            name = m.group(2).strip()
+        if rank_pattern.match(text):
+            rank_match = rank_pattern.match(text)
+            rank = rank_match.group(1)
+            if "1" in rank or "一" in rank: rank = "優勝"
+            elif "2" in rank or "二" in rank: rank = "２位"
+            elif "3" in rank or "三" in rank: rank = "３位"
+
+            cleaned_text = re.sub(r"^(優勝|[1-3１-３一二三]位)\s*(?:\[\d+\])?\s*", "", text)
+            name_match = re.search(r"^([^\s/【選手]+)", cleaned_text)
+            if name_match:
+                name = name_match.group(1).strip()
+            else:
+                name = cleaned_text.strip()
+            
+            name = re.sub(r"[\s\u3000/・\-]", "", name)
+
+            if not name or len(name) < 2 or "タックル" in name or "コメント" in name:
+                continue
+                
             img_url = None
             nxt = tag.find_next_sibling()
             count = 0
-            while nxt and count < 3:
+            while nxt and count < 4:
                 img = nxt.find('img') if hasattr(nxt, 'find') else None
+                if not img and nxt.name == 'img':
+                    img = nxt
                 if img and img.get('src'):
                     img_url = img.get('src')
-                    if img_url.startswith('/'): img_url = "https://www.kanritsuriba.com" + img_url
+                    if img_url.startswith('/'):
+                        img_url = "https://www.kanritsuriba.com" + img_url
                     break
                 nxt = nxt.find_next_sibling()
                 count += 1
+                
             if not any(r['name'] == name for r in results):
                 results.append({"rank": rank, "name": name, "image_url": img_url})
+                
     return results
 
-# ★修正：YouTubeの埋め込みURL(embed)を普通の視聴URL(watch?v=)に自動変換するヘルパー
+# ★高精度：優勝回数・連続優勝判定（独自カラムwinner_nameを使用）
+def get_winner_congratulations_message(winner_name, current_round_num):
+    clean_winner_name = re.sub(r"[\s\u3000/・\-]", "", winner_name)
+
+    conn = sqlite3.connect(DB_PATH)
+    c = conn.cursor()
+    c.execute("SELECT round_num, winner_name FROM tournaments WHERE winner_name != ''")
+    rows = c.fetchall()
+    conn.close()
+
+    past_wins = 0
+    is_consecutive = False
+
+    try:
+        current_r = int(current_round_num)
+        prev_r = current_r - 1
+    except ValueError:
+        current_r, prev_r = None, None
+
+    for r_num, w_name in rows:
+        clean_w_name = re.sub(r"[\s\u3000/・\-]", "", w_name)
+        if clean_winner_name == clean_w_name:
+            past_wins += 1
+            if prev_r is not None and str(prev_r) in str(r_num):
+                is_consecutive = True
+
+    if is_consecutive:
+        return f"🎉 圧巻の2連続優勝おめでとうございます！強すぎます！🔥"
+    elif past_wins >= 1:
+        return f"🎉 今季{past_wins + 1}勝目のお祝いを申し上げます！素晴らしい快進撃です！👏"
+    else:
+        return "🎉 優勝おめでとうございます！見事な勝利です！"
+
 def normalize_youtube_url(url_str):
     if not url_str:
         return url_str
-    # //www.youtube.com/... などの補完
     if url_str.startswith("//"):
         url_str = "https:" + url_str
-    # embed/動画ID を watch?v=動画ID へ変換
     embed_match = re.search(r"youtube\.com/embed/([a-zA-Z0-9_-]+)", url_str)
     if embed_match:
         video_id = embed_match.group(1)
@@ -261,14 +316,11 @@ def extract_videos_from_html(html_content):
             count = 0
             while nxt and count < 3:
                 vid_url = None
-                
-                # 1. 埋め込み動画(iframe)を探す
                 iframe = nxt.find('iframe') if hasattr(nxt, 'find') else None
                 if not iframe and nxt.name == 'iframe': iframe = nxt
                 if iframe and iframe.get('src') and 'youtube' in iframe.get('src'):
                     vid_url = iframe.get('src')
                 
-                # 2. テキストリンク(aタグ)を探す
                 if not vid_url:
                     a_tags = nxt.find_all('a') if hasattr(nxt, 'find_all') else []
                     if nxt.name == 'a': a_tags.append(nxt)
@@ -279,7 +331,6 @@ def extract_videos_from_html(html_content):
                             break
                             
                 if vid_url:
-                    # ★ここでYouTube URLを直接開ける標準形式に整形
                     normalized_url = normalize_youtube_url(vid_url)
                     if is_interview and "interview" not in videos:
                         videos["interview"] = {"title": text, "url": normalized_url}
@@ -325,15 +376,38 @@ def send_result_line_flex(header_title, round_num, location, results, page_url, 
         name = res['name']
         img_url = res.get('image_url')
         bg_color, icon_emoji = theme_color, "🏅"
-        if "優勝" in rank or "1" in rank or "１" in rank: bg_color, icon_emoji = "#D4AF37", "🏆"
+        
+        is_winner = False
+        if "優勝" in rank or "1" in rank or "１" in rank: 
+            bg_color, icon_emoji = "#D4AF37", "🏆"
+            is_winner = True
         elif "2" in rank or "２" in rank: bg_color, icon_emoji = "#C0C0C0", "🥈"
         elif "3" in rank or "３" in rank: bg_color, icon_emoji = "#CD7F32", "🥉"
 
-        bubble = {"type": "bubble", "header": {"type": "box", "layout": "vertical", "backgroundColor": bg_color, "contents": [{"type": "text", "text": f"{rank}", "color": "#FFFFFF", "weight": "bold", "size": "md"}]}, "body": {"type": "box", "layout": "vertical", "alignItems": "center", "contents": [{"type": "text", "text": icon_emoji, "size": "4xl", "margin": "md"}, {"type": "text", "text": name, "weight": "bold", "size": "xl", "margin": "md", "color": "#333333", "wrap": True}, {"type": "text", "text": f"第{round_num}戦 {location}", "size": "xs", "color": "#888888", "margin": "sm", "wrap": True}]}, "footer": {"type": "box", "layout": "vertical", "contents": [{"type": "button", "action": {"type": "uri", "label": "🔗 結果詳細を見る", "uri": page_url}, "style": "primary", "color": bg_color}]}}
+        body_contents = [
+            {"type": "text", "text": icon_emoji, "size": "4xl", "margin": "md"},
+            {"type": "text", "text": name, "weight": "bold", "size": "xl", "margin": "md", "color": "#333333", "wrap": True},
+            {"type": "text", "text": f"第{round_num}戦 {location}", "size": "xs", "color": "#888888", "margin": "sm", "wrap": True}
+        ]
+
+        if is_winner:
+            congrat_msg = get_winner_congratulations_message(name, round_num)
+            body_contents.append({"type": "separator", "margin": "md"})
+            body_contents.append({"type": "text", "text": congrat_msg, "size": "xs", "color": "#D32F2F", "weight": "bold", "margin": "md", "wrap": True})
+
+        bubble = {
+            "type": "bubble", 
+            "header": {"type": "box", "layout": "vertical", "backgroundColor": bg_color, "contents": [{"type": "text", "text": f"{rank}", "color": "#FFFFFF", "weight": "bold", "size": "md"}]}, 
+            "body": {"type": "box", "layout": "vertical", "alignItems": "center", "contents": body_contents}, 
+            "footer": {"type": "box", "layout": "vertical", "contents": [{"type": "button", "action": {"type": "uri", "label": "🔗 結果詳細を見る", "uri": page_url}, "style": "primary", "color": bg_color}]}
+        }
+        
         if img_url:
             bubble["hero"] = {"type": "image", "url": img_url, "size": "full", "aspectRatio": "4:3", "aspectMode": "cover"}
             bubble["body"]["contents"].pop(0)
+            
         bubbles.append(bubble)
+
     try: requests.post(url, headers=headers, json={"to": LINE_USER_ID, "messages": [{"type": "flex", "altText": f"【大会結果】第{round_num}戦 {location}", "contents": {"type": "carousel", "contents": bubbles}}]}, timeout=TIMEOUT_SEC)
     except Exception: pass
 
@@ -380,13 +454,13 @@ def fetch_page_data(url):
 # ==========================================
 def main():
     now = get_jst_now()
-    print(f"[{now.strftime('%Y-%m-%d %H:%M:%S')}] 全自動監視処理（YouTube URL自動修復版）を開始します。")
+    print(f"[{now.strftime('%Y-%m-%d %H:%M:%S')}] 全自動監視処理（全優勝者DBスキャン機能対応版）を開始します。")
     
     conn, is_initial_setup = init_db()
     c = conn.cursor()
 
     c.execute("PRAGMA table_info(tournaments)")
-    if len(c.fetchall()) < 21:
+    if len(c.fetchall()) < 22:
         print("⚠️ データベースの準備が完了していません。")
         return
 
@@ -422,25 +496,6 @@ def main():
 
     for url in urls_to_check:
         try:
-            c.execute("SELECT notified_video_final, event_datetime FROM tournaments WHERE url = ?", (url,))
-            check_row = c.fetchone()
-            if check_row:
-                n_video_final = check_row[0]
-                event_dt_str = check_row[1]
-                
-                if n_video_final == 1:
-                    print(f"✅ 監視完了済(アクセススキップ): {url}")
-                    continue
-                
-                if event_dt_str:
-                    try:
-                        event_dt_db = datetime.strptime(event_dt_str, "%Y-%m-%d %H:%M:%S")
-                        if (now - event_dt_db).days > 60:
-                            print(f"✅ 監視完了済(期間経過スキップ): {url}")
-                            continue
-                    except Exception:
-                        pass
-
             print(f"🔍 ページ解析中: {url}")
             match_year = re.search(r"/at/(\d{4})_", url)
             url_year = int(match_year.group(1)) if match_year else current_year
@@ -474,21 +529,37 @@ def main():
             results_data = extract_tournament_results_from_html(combined_html)
             videos_data = extract_videos_from_html(combined_html)
 
+            # 優勝者の氏名を切り出し
+            winner_name = ""
+            for r in results_data:
+                if r['rank'] == "優勝":
+                    winner_name = r['name']
+                    break
+
             c.execute("SELECT * FROM tournaments WHERE url = ?", (url,))
             row = c.fetchone()
 
             if not row:
-                new_notified_flag = 0 if (is_night_mode and not is_initial_setup) else 1
+                # 新規登録時はサンクチュアリ(第19戦)等の最新結果のみ通知対象とし、古い大会は既読化
+                days_since_event = (now - event_dt).days if event_dt else 999
+                result_flag = 0 if days_since_event <= 14 else 1
+
                 c.execute(
                     """INSERT INTO tournaments 
-                    (url, round_num, location, event_date, event_datetime, entry_datetime, entry_str, reception_time, fee, original_text, is_cancelled, notified_new, notified_1d, notified_1h, notified_15m, notified_event_1d, notified_just, notified_after_24h, notified_result, notified_video_interview, notified_video_final)
-                    VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, 0, 0, 0, 0, 0, 0, 0, 0, 0)""",
-                    (url, round_num, location, event_date_str, event_dt.strftime("%Y-%m-%d %H:%M:%S") if event_dt else None, entry_dt.strftime("%Y-%m-%d %H:%M:%S") if entry_dt else None, entry_str, reception_time, fee, combined_text, is_cancelled, new_notified_flag)
+                    (url, round_num, location, event_date, event_datetime, entry_datetime, entry_str, reception_time, fee, original_text, is_cancelled, notified_new, notified_1d, notified_1h, notified_15m, notified_event_1d, notified_just, notified_after_24h, notified_result, notified_video_interview, notified_video_final, winner_name)
+                    VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, 1, 0, 0, 0, 0, 0, 0, ?, 1, 1, ?)""",
+                    (url, round_num, location, event_date_str, event_dt.strftime("%Y-%m-%d %H:%M:%S") if event_dt else None, entry_dt.strftime("%Y-%m-%d %H:%M:%S") if entry_dt else None, entry_str, reception_time, fee, combined_text, is_cancelled, result_flag, winner_name)
                 )
-                if not is_initial_setup and not is_night_mode:
-                    notify_queue.append({"type": "info", "header": "🆕【新規大会開催予定】", "round_num": round_num, "location": location, "event_date_str": event_date_str, "entry_str": entry_str, "url": url, "theme_color": theme_color})
+
+                if result_flag == 0 and not is_night_mode and results_data:
+                    notify_queue.append({"type": "result", "header": "🎊【大会結果発表！】", "round_num": round_num, "location": location, "results": results_data, "url": url, "theme_color": theme_color})
+                    db_updates.append(("UPDATE tournaments SET notified_result = 1 WHERE url = ?", (url,)))
             else:
-                (db_url, db_round, db_loc, db_event_date, db_event_dt_str, db_entry_dt_str, db_entry_str, db_reception, db_fee, db_text, db_cancelled, n_new, n_1d, n_1h, n_15m, n_event_1d, n_just, n_after_24h, n_result, n_video_int, n_video_fin) = row
+                (db_url, db_round, db_loc, db_event_date, db_event_dt_str, db_entry_dt_str, db_entry_str, db_reception, db_fee, db_text, db_cancelled, n_new, n_1d, n_1h, n_15m, n_event_1d, n_just, n_after_24h, n_result, n_video_int, n_video_fin, db_winner) = row
+
+                # 優勝者名の更新記録
+                if winner_name and db_winner != winner_name:
+                    c.execute("UPDATE tournaments SET winner_name = ? WHERE url = ?", (winner_name, url))
 
                 # 🎬 動画通知の判定
                 if "interview" in videos_data and n_video_int == 0:

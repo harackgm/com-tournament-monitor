@@ -14,7 +14,7 @@ LINE_CHANNEL_ACCESS_TOKEN = os.environ.get("LINE_CHANNEL_ACCESS_TOKEN", "")
 LINE_USER_ID = os.environ.get("LINE_USER_ID", "")
 
 DB_PATH = "tournaments.db"
-MAX_NOTIFY_LIMIT = 5  # 大量通知ストッパー（安全装置）
+MAX_NOTIFY_LIMIT = 5  # 大量通知ストッパー（裏側の安全装置）
 TIMEOUT_SEC = 10  # 通信タイムアウト時間(10秒)
 
 # --- 大会前日リマインドの通知時間帯指定 ---
@@ -221,7 +221,6 @@ def extract_fee(text):
     match = re.search(r"【?(?:参加費用|参加費|費用)】?[：:\s]*([\d,]+円(?:\s*[\(（][^\)）]*[\)）])?)", text)
     return match.group(1).strip() if match else "情報参照"
 
-# ★修正：リード文誤爆を完全に回避するため、「見出しの文章そのもの」をジャンプ指定文字列にする
 def extract_tournament_results_from_html(html_content):
     results = []
     if not html_content: return results
@@ -232,7 +231,6 @@ def extract_tournament_results_from_html(html_content):
     for tag in soup.find_all(['h3', 'h4']):
         exact_heading = tag.get_text(strip=True)
         
-        # 誤検知防止：「インタビュー」などの文字があればスキップ
         if "インタビュー" in exact_heading or "動画" in exact_heading:
             continue
 
@@ -255,8 +253,6 @@ def extract_tournament_results_from_html(html_content):
             if not name or len(name) < 2 or "タックル" in name or "コメント" in name:
                 continue
                 
-            # ★テキストフラグメント用：見出しの文章を丸ごと取得（例: 優勝[1]齋藤篤史選手のタックル）
-            # 長すぎるとエラーになるため最初の20文字のみをターゲットにする
             jump_target = exact_heading[:20]
 
             img_url = None
@@ -316,18 +312,19 @@ def normalize_youtube_url(url_str):
         return url_str
     if url_str.startswith("//"):
         url_str = "https:" + url_str
-    embed_match = re.search(r"youtube\.com/embed/([a-zA-Z0-9_-]+)", url_str)
+    embed_match = re.search(r"(?:youtube\.com/embed/|youtu\.be/|youtube\.com/watch\?v=)([a-zA-Z0-9_-]+)", url_str)
     if embed_match:
         video_id = embed_match.group(1)
         return f"https://www.youtube.com/watch?v={video_id}"
     return url_str
 
+# 可変HTML構造対応（深層探索）
 def extract_videos_from_html(html_content):
     videos = {}
     if not html_content: return videos
     soup = BeautifulSoup(html_content, "html.parser")
     
-    for tag in soup.find_all(['h3', 'h4', 'h2']):
+    for tag in soup.find_all(['h2', 'h3', 'h4']):
         text = tag.get_text(strip=True)
         is_interview = "インタビュー" in text
         is_final = "決勝戦" in text or "決勝動画" in text
@@ -335,20 +332,30 @@ def extract_videos_from_html(html_content):
         if is_interview or is_final:
             nxt = tag.find_next_sibling()
             count = 0
-            while nxt and count < 3:
+            while nxt and count < 8:
+                if getattr(nxt, 'name', '') in ['h2', 'h3', 'h4'] and nxt != tag:
+                    break
+                    
                 vid_url = None
+                
+                # 1. iframeチェック
                 iframe = nxt.find('iframe') if hasattr(nxt, 'find') else None
-                if not iframe and nxt.name == 'iframe': iframe = nxt
-                if iframe and iframe.get('src') and 'youtube' in iframe.get('src'):
+                if not iframe and getattr(nxt, 'name', '') == 'iframe': iframe = nxt
+                if iframe and iframe.get('src') and ('youtube' in iframe.get('src') or 'youtu.be' in iframe.get('src')):
                     vid_url = iframe.get('src')
                 
+                # 2. aタグ・ブログカードチェック
                 if not vid_url:
                     a_tags = nxt.find_all('a') if hasattr(nxt, 'find_all') else []
-                    if nxt.name == 'a': a_tags.append(nxt)
+                    if getattr(nxt, 'name', '') == 'a': a_tags.append(nxt)
                     for a_tag in a_tags:
                         href = a_tag.get('href', '')
-                        if 'youtube.com' in href or 'youtu.be' in href:
-                            vid_url = href
+                        title = a_tag.get('title', '')
+                        text_content = a_tag.get_text()
+                        
+                        target_str = f"{href} {title} {text_content}"
+                        if 'youtube.com' in target_str or 'youtu.be' in target_str:
+                            vid_url = href or title
                             break
                             
                 if vid_url:
@@ -387,7 +394,6 @@ def send_line_flex(header_title, round_num, location, event_date_str, entry_str,
     try: requests.post(url, headers=headers, json=flex_payload, timeout=TIMEOUT_SEC)
     except Exception: pass
 
-# ★修正：生成した「完全な見出し」をURLエンコードして確実にスクロールさせる
 def send_result_line_flex(header_title, round_num, location, results, page_url, theme_color):
     if not LINE_CHANNEL_ACCESS_TOKEN or not LINE_USER_ID: return
     url = "https://api.line.me/v2/bot/message/push"
@@ -416,7 +422,6 @@ def send_result_line_flex(header_title, round_num, location, results, page_url, 
             body_contents.append({"type": "separator", "margin": "md"})
             body_contents.append({"type": "text", "text": res['congrat_msg'], "size": "xs", "color": "#D32F2F", "weight": "bold", "margin": "md", "wrap": True})
 
-        # Text Fragmentを使用して、見出しに確実にジャンプさせる
         jump_target = res.get('jump_target', name)
         target_url = f"{page_url}#:~:text={urllib.parse.quote(jump_target)}"
 
@@ -464,25 +469,8 @@ def send_video_line_flex(header_title, round_num, location, video_data, page_url
     try: requests.post(url, headers=headers, json=flex_payload, timeout=TIMEOUT_SEC)
     except Exception: pass
 
-def send_simple_text(text_message):
-    if not LINE_CHANNEL_ACCESS_TOKEN or not LINE_USER_ID: return
-    url = "https://api.line.me/v2/bot/message/push"
-    headers = {"Content-Type": "application/json", "Authorization": f"Bearer {LINE_CHANNEL_ACCESS_TOKEN}"}
-    try: requests.post(url, headers=headers, json={"to": LINE_USER_ID, "messages": [{"type": "text", "text": text_message}]}, timeout=TIMEOUT_SEC)
-    except Exception: pass
-
-def fetch_page_data(url):
-    res = fetch_url(url)
-    if res and res.status_code == 200:
-        try:
-            soup = BeautifulSoup(res.text, "html.parser")
-            content_area = soup.find("div", class_="entry-content") or soup
-            return content_area.get_text(separator=" ", strip=True), str(content_area)
-        except Exception: pass
-    return "", ""
-
 # ==========================================
-# メイン監視処理（本番運用モード・重複通知完全排除版）
+# メイン監視処理（一般公開・本番運用モード）
 # ==========================================
 def main():
     now = get_jst_now()
@@ -680,7 +668,6 @@ def main():
         except Exception as e:
             pass
 
-    # ★二重通知防止：通知キューの中で同じ大会のデータがダブっていたら弾く
     unique_notify_queue = []
     seen = set()
     for item in notify_queue:
@@ -699,7 +686,7 @@ def main():
 
     if not is_initial_setup and notify_queue:
         if len(notify_queue) > MAX_NOTIFY_LIMIT:
-            send_simple_text("⚠️【システム通知】多数の新着・更新を検知したため連続送信をストップしました。サイトをご確認ください。")
+            print(f"⚠️ 大量検知({len(notify_queue)}件)のため、LINEへの連続送信をストップしました。（ユーザーへのシステム通知はスキップ）")
         else:
             for item in notify_queue:
                 if item.get("type") == "result":

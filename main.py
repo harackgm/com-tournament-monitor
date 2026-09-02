@@ -511,19 +511,24 @@ def main():
 
     for url in urls_to_check:
         try:
-            c.execute("SELECT notified_video_final, event_datetime FROM tournaments WHERE url = ?", (url,))
+            c.execute("SELECT notified_video_interview, notified_video_final, event_datetime FROM tournaments WHERE url = ?", (url,))
             check_row = c.fetchone()
             if check_row:
-                n_video_final = check_row[0]
-                event_dt_str = check_row[1]
-                if n_video_final == 1:
+                n_video_int = check_row[0]
+                n_video_final = check_row[1]
+                event_dt_str = check_row[2]
+                
+                # インタビュー動画・決勝動画の両方が送信完了した場合はスキップ
+                if n_video_int == 1 and n_video_final == 1:
                     print(f"✅ 監視完了済(アクセススキップ): {url}")
                     continue
+                
+                # 大会開催日から「30日」経過したページは監視を終了（スキップ）
                 if event_dt_str:
                     try:
                         event_dt_db = datetime.strptime(event_dt_str, "%Y-%m-%d %H:%M:%S")
-                        if (now - event_dt_db).days > 60:
-                            print(f"✅ 監視完了済(期間経過スキップ): {url}")
+                        if (now - event_dt_db).days > 30:
+                            print(f"✅ 監視完了済(30日経過スキップ): {url}")
                             continue
                     except Exception: pass
 

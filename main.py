@@ -189,8 +189,9 @@ def get_theme_color(location_name):
 # ==========================================
 # テキスト解析ヘルパー関数群
 # ==========================================
+# ★強化：開催日の「10/5」「10.5」といった記号表記のゆらぎにも対応
 def extract_event_date_info(text, year):
-    match = re.search(r"(?:(\d{4})年)?\s*(\d{1,2})月(\d{1,2})日", text)
+    match = re.search(r"(?:(\d{4})[年/.-])?\s*(\d{1,2})[月/.-](\d{1,2})[日]?", text)
     if match:
         y = int(match.group(1)) if match.group(1) else year
         m = int(match.group(2))
@@ -230,12 +231,14 @@ def extract_fee(text):
     match = re.search(r"【?(?:参加費用|参加費|費用)】?[：:\s]*([\d,]+円(?:\s*[\(（][^\)）]*[\)）])?)", text)
     return match.group(1).strip() if match else "情報参照"
 
+# ★強化：「準優勝」という表記のゆらぎに対応
 def extract_tournament_results_from_html(html_content):
     results = []
     if not html_content: return results
     soup = BeautifulSoup(html_content, "html.parser")
     
-    rank_pattern = re.compile(r"^(優勝|[1-3１-３一二三]位)")
+    # 「準優勝」を追加
+    rank_pattern = re.compile(r"^(優勝|準優勝|[1-3１-３一二三]位)")
     
     for tag in soup.find_all(['h3', 'h4']):
         exact_heading = tag.get_text(strip=True)
@@ -247,10 +250,11 @@ def extract_tournament_results_from_html(html_content):
             rank_match = rank_pattern.match(exact_heading)
             rank = rank_match.group(1)
             if "1" in rank or "一" in rank: rank = "優勝"
-            elif "2" in rank or "二" in rank: rank = "２位"
+            # 準優勝を内部的に2位として統一処理する
+            elif "2" in rank or "二" in rank or "準優勝" in rank: rank = "２位"
             elif "3" in rank or "三" in rank: rank = "３位"
 
-            cleaned_text = re.sub(r"^(優勝|[1-3１-３一二三]位)\s*(?:\[\d+\])?\s*", "", exact_heading)
+            cleaned_text = re.sub(r"^(優勝|準優勝|[1-3１-３一二三]位)\s*(?:\[\d+\])?\s*", "", exact_heading)
             name_match = re.search(r"^([^\s/【選手]+)", cleaned_text)
             if name_match:
                 name = name_match.group(1).strip()
@@ -327,7 +331,6 @@ def normalize_youtube_url(url_str):
         return f"https://www.youtube.com/watch?v={video_id}"
     return url_str
 
-# ★強化：想定外のワード（類義語や英語）にも対応する複数キーワード検知
 def extract_videos_from_html(html_content):
     videos = {}
     if not html_content: return videos
@@ -335,15 +338,13 @@ def extract_videos_from_html(html_content):
     
     headings = soup.find_all(['h2', 'h3', 'h4'])
     
-    # 網羅的なキーワード辞書
     interview_kws = ["インタビュー", "優勝者の声", "コメント", "ヒーロー", "winner"]
     final_kws = ["決勝", "ファイナル", "優勝決定戦", "final"]
     exclude_kws = ["準決勝", "予選", "セミファイナル", "3位決定戦", "三位決定戦", "準々決勝", "semi"]
 
     for i, tag in enumerate(headings):
-        text = tag.get_text(strip=True).lower()  # 小文字化して英語のゆらぎ（Final, FINAL）にも対応
+        text = tag.get_text(strip=True).lower()
         
-        # 複数キーワードでの柔軟な判定
         is_interview = any(kw in text for kw in interview_kws)
         is_final = any(kw in text for kw in final_kws) and not any(kw in text for kw in exclude_kws)
         
@@ -577,7 +578,8 @@ def main():
             fee = extract_fee(combined_text)
             theme_color = get_theme_color(location)
 
-            cancel_keywords = ["見送る", "中止", "延期", "順延", "取りやめ", "開催を見送"]
+            # ★強化：「キャンセル」等のゆらぎにも対応するよう追加
+            cancel_keywords = ["見送る", "中止", "延期", "順延", "取りやめ", "開催を見送", "キャンセル", "開催中止"]
             is_cancelled = 1 if any(kw in combined_text for kw in cancel_keywords) else 0
 
             results_data = extract_tournament_results_from_html(combined_html)

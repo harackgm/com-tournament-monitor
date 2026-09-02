@@ -14,7 +14,7 @@ LINE_CHANNEL_ACCESS_TOKEN = os.environ.get("LINE_CHANNEL_ACCESS_TOKEN", "")
 LINE_USER_ID = os.environ.get("LINE_USER_ID", "")
 
 DB_PATH = "tournaments.db"
-MAX_NOTIFY_LIMIT = 5  # 大量通知ストッパー（裏側の安全装置）
+MAX_NOTIFY_LIMIT = 5  # 大量通知ストッパー（裏側の安全装置：5件以上はLINE非送信でDB更新のみ）
 TIMEOUT_SEC = 10  # 通信タイムアウト時間(10秒)
 
 # --- 大会前日リマインドの通知時間帯指定 ---
@@ -22,8 +22,8 @@ EVENT_1D_HOUR_START = 18
 EVENT_1D_HOUR_END = 22
 
 # --- 🌙 おやすみモード（深夜通知防止）設定 ---
-# 24時（0時）〜9時の間の通知を自動で保留
-NIGHT_MODE_START = 24
+# 23:00〜9:00の間の通知を自動で保留する本番設定
+NIGHT_MODE_START = 23
 NIGHT_MODE_END = 9
 
 # 主要釣り場の座標マッピング
@@ -45,7 +45,7 @@ def get_jst_now():
     return datetime.now(timezone.utc).astimezone(timezone(timedelta(hours=9))).replace(tzinfo=None)
 
 # ==========================================
-# 強化版 ネットワーク接続ヘルパー
+# 強化版 ネットワーク接続ヘルパー（サーバー負荷軽減）
 # ==========================================
 def fetch_url(url, retries=3):
     headers = {
@@ -156,14 +156,13 @@ def init_db():
     """)
     conn.commit()
 
-    # ワンタイムDB救済処理（第19戦の動画フラグを安全にリセット）
+    # ワンタイムDB救済処理（実行済みのため安全にスキップされます）
     c.execute("CREATE TABLE IF NOT EXISTS system_config (key TEXT PRIMARY KEY, value TEXT)")
     c.execute("SELECT value FROM system_config WHERE key = 'fix_19_video_reset'")
     if not c.fetchone():
         c.execute("UPDATE tournaments SET notified_video_interview = 0, notified_video_final = 0 WHERE url LIKE '%2026_19%'")
         c.execute("INSERT INTO system_config (key, value) VALUES ('fix_19_video_reset', '1')")
         conn.commit()
-        print("💡 【システム自動処理】第19戦の動画通知フラグを未通知に安全にリセットしました。")
 
     return conn, is_initial_setup
 
@@ -328,22 +327,22 @@ def normalize_youtube_url(url_str):
         return f"https://www.youtube.com/watch?v={video_id}"
     return url_str
 
-# ★刷新：DOM構造に依存しない確実なYouTube動画一括抽出ロジック
+# ★強化：表記揺れ（「決勝」「決勝戦」「決勝動画」）に完全対応した一括動画抽出ロジック
 def extract_videos_from_html(html_content):
     videos = {}
     if not html_content: return videos
     soup = BeautifulSoup(html_content, "html.parser")
     
-    # ページ内のすべての見出しタグを取得
     headings = soup.find_all(['h2', 'h3', 'h4'])
     
     for i, tag in enumerate(headings):
         text = tag.get_text(strip=True)
+        
         is_interview = "インタビュー" in text
-        is_final = "決勝戦" in text or "決勝動画" in text
+        # 表記揺れ（「決勝」「決勝戦」「決勝動画」）をすべてカバー（準決勝や予選は除外）
+        is_final = ("決勝" in text) and ("準決勝" not in text) and ("予選" not in text)
         
         if is_interview or is_final:
-            # 現見出しから次の見出しまでの間のHTMLブロックを作成
             block_elements = []
             curr = tag.next_element
             while curr and curr != (headings[i+1] if i+1 < len(headings) else None):
@@ -585,7 +584,6 @@ def main():
             results_data = extract_tournament_results_from_html(combined_html)
             videos_data = extract_videos_from_html(combined_html)
 
-            # ★ログ強化：抽出された動画データを出力
             if videos_data:
                 print(f"🎬 抽出された動画データ [{url}]: {videos_data}")
 

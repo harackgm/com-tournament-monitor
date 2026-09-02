@@ -502,29 +502,36 @@ def main():
     current_year = now.year
     is_night_mode = (now.hour >= NIGHT_MODE_START or now.hour < NIGHT_MODE_END)
     
-    target_years = [current_year]
-    if now.month <= 3: target_years.append(current_year - 1)
-    if now.month >= 9: target_years.append(current_year + 1)
-    target_years = sorted(list(set(target_years)))
-
     urls_to_check = []
-    for year in target_years:
-        tag_url = f"https://www.kanritsuriba.com/at/tag/areatournament{year}/"
-        print(f"🔍 一覧ページ取得中: {tag_url}")
-        res = fetch_url(tag_url)
-        if not res: continue
+
+    # ----------------------------------------------------
+    # URL収集の最適化（サーバー負荷軽減：RSS利用）
+    # ----------------------------------------------------
+    # 1. RSSフィードから最新の更新記事を取得
+    print("🔍 RSSフィードから最新記事を取得中...")
+    rss_url = "https://www.kanritsuriba.com/at/feed/"
+    res = fetch_url(rss_url)
+    if res:
         try:
+            # RSSのXMLもhtml.parserで簡易解析可能
             soup = BeautifulSoup(res.text, "html.parser")
-            pattern = re.compile(rf"/at/{year}_\d+/")
-            links = soup.find_all("a", href=pattern)
-            for a in links:
-                href = a["href"]
-                full_url = href if href.startswith("http") else f"https://www.kanritsuriba.com{href}"
-                urls_to_check.append(full_url)
-        except Exception: pass
+            for item in soup.find_all("item"):
+                link = item.find("link")
+                if link and link.text:
+                    url = link.text.strip()
+                    if "/at/" in url:  # エリアトーナメント関係の記事のみ抽出
+                        urls_to_check.append(url)
+        except Exception as e:
+            print(f"⚠️ RSS解析エラー: {e}")
+
+    # 2. データベース内の既存URLを取得（過去記事のタイマー監視を継続するため）
+    c.execute("SELECT url FROM tournaments")
+    for row in c.fetchall():
+        urls_to_check.append(row[0])
 
     urls_to_check = list(set(urls_to_check))
     print(f"📊 チェック対象URL数: {len(urls_to_check)}件")
+    # ----------------------------------------------------
 
     notify_queue = []
     db_updates = []
@@ -540,7 +547,8 @@ def main():
                 
                 # インタビュー動画・決勝動画の両方が送信完了した場合はスキップ
                 if n_video_int == 1 and n_video_final == 1:
-                    print(f"✅ 監視完了済(アクセススキップ): {url}")
+                    # ログの出力が多すぎる場合はここのprintをコメントアウト可能
+                    # print(f"✅ 監視完了済(アクセススキップ): {url}")
                     continue
                 
                 # 大会開催日から「30日」経過したページは監視を終了（スキップ）
@@ -548,7 +556,7 @@ def main():
                     try:
                         event_dt_db = datetime.strptime(event_dt_str, "%Y-%m-%d %H:%M:%S")
                         if (now - event_dt_db).days > 30:
-                            print(f"✅ 監視完了済(30日経過スキップ): {url}")
+                            # print(f"✅ 監視完了済(30日経過スキップ): {url}")
                             continue
                     except Exception: pass
 
@@ -718,6 +726,7 @@ def main():
     conn.commit()
     conn.close()
 
+    # 安全装置：MAX_NOTIFY_LIMIT 制御
     if not is_initial_setup and notify_queue:
         if len(notify_queue) > MAX_NOTIFY_LIMIT:
             print(f"⚠️ 大量検知({len(notify_queue)}件)のため、LINEへの連続送信をストップしました。（ユーザーへのシステム通知はスキップ）")

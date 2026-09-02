@@ -6,6 +6,7 @@ import urllib.parse
 from datetime import datetime, timedelta, timezone
 import requests
 from bs4 import BeautifulSoup
+import xml.etree.ElementTree as ET  # 追加: 警告を出さないための標準XMLパーサー
 
 # ==========================================
 # 安全制御・環境変数設定
@@ -156,7 +157,7 @@ def init_db():
     """)
     conn.commit()
 
-    # ワンタイムDB救済処理（実行済みのため安全にスキップされます）
+    # ワンタイムDB救済処理
     c.execute("CREATE TABLE IF NOT EXISTS system_config (key TEXT PRIMARY KEY, value TEXT)")
     c.execute("SELECT value FROM system_config WHERE key = 'fix_19_video_reset'")
     if not c.fetchone():
@@ -327,7 +328,6 @@ def normalize_youtube_url(url_str):
         return f"https://www.youtube.com/watch?v={video_id}"
     return url_str
 
-# ★強化：表記揺れ（「決勝」「決勝戦」「決勝動画」）に完全対応した一括動画抽出ロジック
 def extract_videos_from_html(html_content):
     videos = {}
     if not html_content: return videos
@@ -339,7 +339,6 @@ def extract_videos_from_html(html_content):
         text = tag.get_text(strip=True)
         
         is_interview = "インタビュー" in text
-        # 表記揺れ（「決勝」「決勝戦」「決勝動画」）をすべてカバー（準決勝や予選は除外）
         is_final = ("決勝" in text) and ("準決勝" not in text) and ("予選" not in text)
         
         if is_interview or is_final:
@@ -352,14 +351,12 @@ def extract_videos_from_html(html_content):
             block_soup = BeautifulSoup("".join([str(e) for e in block_elements]), "html.parser")
             
             vid_url = None
-            # 1. iframeからの抽出
             for iframe in block_soup.find_all('iframe'):
                 src = iframe.get('src', '')
                 if 'youtube' in src or 'youtu.be' in src:
                     vid_url = src
                     break
                     
-            # 2. aタグ（ブログカード等）からの抽出
             if not vid_url:
                 for a_tag in block_soup.find_all('a'):
                     href = a_tag.get('href', '')
@@ -507,24 +504,23 @@ def main():
     # ----------------------------------------------------
     # URL収集の最適化（サーバー負荷軽減：RSS利用）
     # ----------------------------------------------------
-    # 1. RSSフィードから最新の更新記事を取得
     print("🔍 RSSフィードから最新記事を取得中...")
     rss_url = "https://www.kanritsuriba.com/at/feed/"
     res = fetch_url(rss_url)
     if res:
         try:
-            # RSSのXMLもhtml.parserで簡易解析可能
-            soup = BeautifulSoup(res.text, "html.parser")
-            for item in soup.find_all("item"):
+            # 警告回避のため、標準ライブラリのXMLパーサーで安全に解析するよう変更
+            root = ET.fromstring(res.content)
+            for item in root.findall(".//item"):
                 link = item.find("link")
-                if link and link.text:
+                if link is not None and link.text:
                     url = link.text.strip()
                     if "/at/" in url:  # エリアトーナメント関係の記事のみ抽出
                         urls_to_check.append(url)
         except Exception as e:
             print(f"⚠️ RSS解析エラー: {e}")
 
-    # 2. データベース内の既存URLを取得（過去記事のタイマー監視を継続するため）
+    # データベース内の既存URLを取得（過去記事のタイマー監視を継続するため）
     c.execute("SELECT url FROM tournaments")
     for row in c.fetchall():
         urls_to_check.append(row[0])
@@ -547,8 +543,6 @@ def main():
                 
                 # インタビュー動画・決勝動画の両方が送信完了した場合はスキップ
                 if n_video_int == 1 and n_video_final == 1:
-                    # ログの出力が多すぎる場合はここのprintをコメントアウト可能
-                    # print(f"✅ 監視完了済(アクセススキップ): {url}")
                     continue
                 
                 # 大会開催日から「30日」経過したページは監視を終了（スキップ）
@@ -556,7 +550,6 @@ def main():
                     try:
                         event_dt_db = datetime.strptime(event_dt_str, "%Y-%m-%d %H:%M:%S")
                         if (now - event_dt_db).days > 30:
-                            # print(f"✅ 監視完了済(30日経過スキップ): {url}")
                             continue
                     except Exception: pass
 

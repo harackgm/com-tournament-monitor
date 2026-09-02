@@ -157,7 +157,15 @@ def init_db():
     """)
     conn.commit()
 
+    # ワンタイムDB救済処理（キャンセル誤検知の修復）
     c.execute("CREATE TABLE IF NOT EXISTS system_config (key TEXT PRIMARY KEY, value TEXT)")
+    c.execute("SELECT value FROM system_config WHERE key = 'fix_cancel_false_positive'")
+    if not c.fetchone():
+        # 誤って中止扱いになった cc044 と 19戦 のフラグを元に戻す（LINE通知は飛ばない安全な操作）
+        c.execute("UPDATE tournaments SET is_cancelled = 0 WHERE url LIKE '%cc044%' OR url LIKE '%2026_19%'")
+        c.execute("INSERT INTO system_config (key, value) VALUES ('fix_cancel_false_positive', '1')")
+        conn.commit()
+
     c.execute("SELECT value FROM system_config WHERE key = 'fix_19_video_reset'")
     if not c.fetchone():
         c.execute("UPDATE tournaments SET notified_video_interview = 0, notified_video_final = 0 WHERE url LIKE '%2026_19%'")
@@ -189,7 +197,6 @@ def get_theme_color(location_name):
 # ==========================================
 # テキスト解析ヘルパー関数群
 # ==========================================
-# ★強化：開催日の「10/5」「10.5」といった記号表記のゆらぎにも対応
 def extract_event_date_info(text, year):
     match = re.search(r"(?:(\d{4})[年/.-])?\s*(\d{1,2})[月/.-](\d{1,2})[日]?", text)
     if match:
@@ -231,13 +238,11 @@ def extract_fee(text):
     match = re.search(r"【?(?:参加費用|参加費|費用)】?[：:\s]*([\d,]+円(?:\s*[\(（][^\)）]*[\)）])?)", text)
     return match.group(1).strip() if match else "情報参照"
 
-# ★強化：「準優勝」という表記のゆらぎに対応
 def extract_tournament_results_from_html(html_content):
     results = []
     if not html_content: return results
     soup = BeautifulSoup(html_content, "html.parser")
     
-    # 「準優勝」を追加
     rank_pattern = re.compile(r"^(優勝|準優勝|[1-3１-３一二三]位)")
     
     for tag in soup.find_all(['h3', 'h4']):
@@ -250,7 +255,6 @@ def extract_tournament_results_from_html(html_content):
             rank_match = rank_pattern.match(exact_heading)
             rank = rank_match.group(1)
             if "1" in rank or "一" in rank: rank = "優勝"
-            # 準優勝を内部的に2位として統一処理する
             elif "2" in rank or "二" in rank or "準優勝" in rank: rank = "２位"
             elif "3" in rank or "三" in rank: rank = "３位"
 
@@ -578,8 +582,8 @@ def main():
             fee = extract_fee(combined_text)
             theme_color = get_theme_color(location)
 
-            # ★強化：「キャンセル」等のゆらぎにも対応するよう追加
-            cancel_keywords = ["見送る", "中止", "延期", "順延", "取りやめ", "開催を見送", "キャンセル", "開催中止"]
+            # ★修正：「キャンセル」というキーワードを完全に削除し、誤検知を防止
+            cancel_keywords = ["見送る", "中止", "延期", "順延", "取りやめ", "開催を見送", "開催中止"]
             is_cancelled = 1 if any(kw in combined_text for kw in cancel_keywords) else 0
 
             results_data = extract_tournament_results_from_html(combined_html)
@@ -648,6 +652,7 @@ def main():
                     c.execute("UPDATE tournaments SET notified_new = 1 WHERE url = ?", (url,))
 
                 if is_cancelled == 1 and db_cancelled == 0:
+                    # ★修正：緊急通知（中止・延期）は深夜帯であっても保留せず即時通知する
                     notify_queue.append({"type": "info", "header": "🚨【緊急：開催中止・変更】", "round_num": db_round, "location": db_loc, "event_date_str": event_date_str, "entry_str": "開催中止・変更が発生しました", "url": url, "theme_color": "#D32F2F"})
                     c.execute("UPDATE tournaments SET is_cancelled = 1 WHERE url = ?", (url,))
                     continue

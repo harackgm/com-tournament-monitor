@@ -157,19 +157,20 @@ def init_db():
     """)
     conn.commit()
 
-    # ワンタイムDB救済処理（キャンセル誤検知の修復）
     c.execute("CREATE TABLE IF NOT EXISTS system_config (key TEXT PRIMARY KEY, value TEXT)")
+    
+    # ワンタイムDB救済処理（キャンセル誤検知の修復）
     c.execute("SELECT value FROM system_config WHERE key = 'fix_cancel_false_positive'")
     if not c.fetchone():
-        # 誤って中止扱いになった cc044 と 19戦 のフラグを元に戻す（LINE通知は飛ばない安全な操作）
         c.execute("UPDATE tournaments SET is_cancelled = 0 WHERE url LIKE '%cc044%' OR url LIKE '%2026_19%'")
         c.execute("INSERT INTO system_config (key, value) VALUES ('fix_cancel_false_positive', '1')")
         conn.commit()
 
-    c.execute("SELECT value FROM system_config WHERE key = 'fix_19_video_reset'")
+    # ★重要追加：第19戦インタビューの再通知（重複送信）を防ぐブロック処理
+    c.execute("SELECT value FROM system_config WHERE key = 'prevent_19_interview_duplicate'")
     if not c.fetchone():
-        c.execute("UPDATE tournaments SET notified_video_interview = 0, notified_video_final = 0 WHERE url LIKE '%2026_19%'")
-        c.execute("INSERT INTO system_config (key, value) VALUES ('fix_19_video_reset', '1')")
+        c.execute("UPDATE tournaments SET notified_video_interview = 1 WHERE url LIKE '%2026_19%'")
+        c.execute("INSERT INTO system_config (key, value) VALUES ('prevent_19_interview_duplicate', '1')")
         conn.commit()
 
     return conn, is_initial_setup
@@ -582,7 +583,6 @@ def main():
             fee = extract_fee(combined_text)
             theme_color = get_theme_color(location)
 
-            # ★修正：「キャンセル」というキーワードを完全に削除し、誤検知を防止
             cancel_keywords = ["見送る", "中止", "延期", "順延", "取りやめ", "開催を見送", "開催中止"]
             is_cancelled = 1 if any(kw in combined_text for kw in cancel_keywords) else 0
 
@@ -652,7 +652,6 @@ def main():
                     c.execute("UPDATE tournaments SET notified_new = 1 WHERE url = ?", (url,))
 
                 if is_cancelled == 1 and db_cancelled == 0:
-                    # ★修正：緊急通知（中止・延期）は深夜帯であっても保留せず即時通知する
                     notify_queue.append({"type": "info", "header": "🚨【緊急：開催中止・変更】", "round_num": db_round, "location": db_loc, "event_date_str": event_date_str, "entry_str": "開催中止・変更が発生しました", "url": url, "theme_color": "#D32F2F"})
                     c.execute("UPDATE tournaments SET is_cancelled = 1 WHERE url = ?", (url,))
                     continue

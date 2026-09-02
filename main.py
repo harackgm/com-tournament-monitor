@@ -420,7 +420,7 @@ def send_result_line_flex(header_title, round_num, location, results, page_url, 
             bg_color, icon_emoji = "#D4AF37", "🏆"
             is_winner = True
         elif "2" in rank or "２" in rank: bg_color, icon_emoji = "#C0C0C0", "🥈"
-        elif "3" in rank or "３" in rank: bg_color, icon_emoji = "#CD7F32", "🥉"
+        elif "3" in rank or "三" in rank: bg_color, icon_emoji = "#CD7F32", "🥉"
 
         body_contents = [
             {"type": "text", "text": icon_emoji, "size": "4xl", "margin": "md"},

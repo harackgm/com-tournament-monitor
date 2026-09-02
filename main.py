@@ -155,10 +155,21 @@ def init_db():
     """)
     conn.commit()
 
+    # ---------------------------------------------------------
+    # ★安全なワンタイムDB救済処理（第19戦の動画フラグを1回だけリセット）
+    # ---------------------------------------------------------
+    c.execute("CREATE TABLE IF NOT EXISTS system_config (key TEXT PRIMARY KEY, value TEXT)")
+    c.execute("SELECT value FROM system_config WHERE key = 'fix_19_video_reset'")
+    if not c.fetchone():
+        c.execute("UPDATE tournaments SET notified_video_interview = 0, notified_video_final = 0 WHERE url LIKE '%2026_19%'")
+        c.execute("INSERT INTO system_config (key, value) VALUES ('fix_19_video_reset', '1')")
+        conn.commit()
+        print("💡 【システム自動処理】第19戦の動画通知フラグを未通知に安全にリセットしました。")
+
     return conn, is_initial_setup
 
 def get_theme_color(location_name):
-    if any(kw in location_name for kw in ["栃木", "群馬", "キングフィッシャー", "上永野", "みどり", "なら山", "大芦", "増井", "宇都宮", "アメイズ", "中之沢", "赤城", "川場", "沼田", "宮城", "ベリーズ", "イワナ"]):
+    if any(kw in location_name for kw in ["栃木", "群ষ্ঠ", "キングフィッシャー", "上永野", "みどり", "なら山", "大芦", "増井", "宇都宮", "アメイズ", "中之沢", "赤城", "川場", "沼田", "宮城", "ベリーズ", "イワナ"]):
         return "#03A9F4"  
     elif any(kw in location_name for kw in ["千葉", "茨城", "ジョイバレー", "けんた", "千葉川すそ", "座間", "高萩", "エリアJ"]):
         return "#FF5722"  
@@ -318,7 +329,7 @@ def normalize_youtube_url(url_str):
         return f"https://www.youtube.com/watch?v={video_id}"
     return url_str
 
-# 可変HTML構造対応（深層探索）
+# ★可変HTML構造対応（深層探索ロジック）
 def extract_videos_from_html(html_content):
     videos = {}
     if not html_content: return videos
@@ -470,7 +481,7 @@ def send_video_line_flex(header_title, round_num, location, video_data, page_url
     except Exception: pass
 
 # ==========================================
-# メイン監視処理（一般公開・本番運用モード）
+# メイン監視処理
 # ==========================================
 def main():
     now = get_jst_now()

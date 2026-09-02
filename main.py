@@ -22,7 +22,7 @@ EVENT_1D_HOUR_START = 18
 EVENT_1D_HOUR_END = 22
 
 # --- 🌙 おやすみモード（深夜通知防止）設定 ---
-# ※23時台の通知を許可するため、開始時間を24時（0時）に変更調整
+# 24時（0時）〜9時の間の通知を自動で保留
 NIGHT_MODE_START = 24
 NIGHT_MODE_END = 9
 
@@ -328,55 +328,56 @@ def normalize_youtube_url(url_str):
         return f"https://www.youtube.com/watch?v={video_id}"
     return url_str
 
-# 可変HTML構造対応（深層探索ロジック）
+# ★刷新：DOM構造に依存しない確実なYouTube動画一括抽出ロジック
 def extract_videos_from_html(html_content):
     videos = {}
     if not html_content: return videos
     soup = BeautifulSoup(html_content, "html.parser")
     
-    for tag in soup.find_all(['h2', 'h3', 'h4']):
+    # ページ内のすべての見出しタグを取得
+    headings = soup.find_all(['h2', 'h3', 'h4'])
+    
+    for i, tag in enumerate(headings):
         text = tag.get_text(strip=True)
         is_interview = "インタビュー" in text
         is_final = "決勝戦" in text or "決勝動画" in text
         
         if is_interview or is_final:
-            nxt = tag.find_next_sibling()
-            count = 0
-            while nxt and count < 8:
-                if getattr(nxt, 'name', '') in ['h2', 'h3', 'h4'] and nxt != tag:
+            # 現見出しから次の見出しまでの間のHTMLブロックを作成
+            block_elements = []
+            curr = tag.next_element
+            while curr and curr != (headings[i+1] if i+1 < len(headings) else None):
+                block_elements.append(curr)
+                curr = curr.next_element
+                
+            block_soup = BeautifulSoup("".join([str(e) for e in block_elements]), "html.parser")
+            
+            vid_url = None
+            # 1. iframeからの抽出
+            for iframe in block_soup.find_all('iframe'):
+                src = iframe.get('src', '')
+                if 'youtube' in src or 'youtu.be' in src:
+                    vid_url = src
                     break
                     
-                vid_url = None
-                
-                # 1. iframeチェック
-                iframe = nxt.find('iframe') if hasattr(nxt, 'find') else None
-                if not iframe and getattr(nxt, 'name', '') == 'iframe': iframe = nxt
-                if iframe and iframe.get('src') and ('youtube' in iframe.get('src') or 'youtu.be' in iframe.get('src')):
-                    vid_url = iframe.get('src')
-                
-                # 2. aタグ・ブログカードチェック
-                if not vid_url:
-                    a_tags = nxt.find_all('a') if hasattr(nxt, 'find_all') else []
-                    if getattr(nxt, 'name', '') == 'a': a_tags.append(nxt)
-                    for a_tag in a_tags:
-                        href = a_tag.get('href', '')
-                        title = a_tag.get('title', '')
-                        text_content = a_tag.get_text()
+            # 2. aタグ（ブログカード等）からの抽出
+            if not vid_url:
+                for a_tag in block_soup.find_all('a'):
+                    href = a_tag.get('href', '')
+                    title = a_tag.get('title', '')
+                    text_cnt = a_tag.get_text()
+                    target_str = f"{href} {title} {text_cnt}"
+                    if 'youtube.com' in target_str or 'youtu.be' in target_str:
+                        vid_url = href or title
+                        break
                         
-                        target_str = f"{href} {title} {text_content}"
-                        if 'youtube.com' in target_str or 'youtu.be' in target_str:
-                            vid_url = href or title
-                            break
-                            
-                if vid_url:
-                    normalized_url = normalize_youtube_url(vid_url)
-                    if is_interview and "interview" not in videos:
-                        videos["interview"] = {"title": text, "url": normalized_url}
-                    if is_final and "final" not in videos:
-                        videos["final"] = {"title": text, "url": normalized_url}
-                    break
-                nxt = nxt.find_next_sibling()
-                count += 1
+            if vid_url:
+                normalized_url = normalize_youtube_url(vid_url)
+                if is_interview and "interview" not in videos:
+                    videos["interview"] = {"title": text, "url": normalized_url}
+                if is_final and "final" not in videos:
+                    videos["final"] = {"title": text, "url": normalized_url}
+                    
     return videos
 
 # ==========================================
@@ -479,6 +480,16 @@ def send_video_line_flex(header_title, round_num, location, video_data, page_url
     try: requests.post(url, headers=headers, json=flex_payload, timeout=TIMEOUT_SEC)
     except Exception: pass
 
+def fetch_page_data(url):
+    res = fetch_url(url)
+    if res and res.status_code == 200:
+        try:
+            soup = BeautifulSoup(res.text, "html.parser")
+            content_area = soup.find("div", class_="entry-content") or soup
+            return content_area.get_text(separator=" ", strip=True), str(content_area)
+        except Exception: pass
+    return "", ""
+
 # ==========================================
 # メイン監視処理（一般公開・本番運用モード）
 # ==========================================
@@ -574,6 +585,10 @@ def main():
             results_data = extract_tournament_results_from_html(combined_html)
             videos_data = extract_videos_from_html(combined_html)
 
+            # ★ログ強化：抽出された動画データを出力
+            if videos_data:
+                print(f"🎬 抽出された動画データ [{url}]: {videos_data}")
+
             winner_name = ""
             for r in results_data:
                 if r['rank'] == "優勝":
@@ -608,11 +623,17 @@ def main():
                     if not is_night_mode:
                         notify_queue.append({"type": "video", "header": "🎤【優勝者インタビュー公開】", "round_num": db_round, "location": db_loc, "video_data": videos_data["interview"], "url": url, "theme_color": theme_color})
                         db_updates.append(("UPDATE tournaments SET notified_video_interview = 1 WHERE url = ?", (url,)))
-                
+                        print(f"🚀 【送信キュー追加】インタビュー動画: {db_round}戦 {db_loc}")
+                    else:
+                        print(f"🌙 【おやすみモード保留】インタビュー動画: {db_round}戦 {db_loc}")
+
                 if "final" in videos_data and n_video_fin == 0:
                     if not is_night_mode:
                         notify_queue.append({"type": "video", "header": "🎥【決勝戦 動画公開】", "round_num": db_round, "location": db_loc, "video_data": videos_data["final"], "url": url, "theme_color": theme_color})
                         db_updates.append(("UPDATE tournaments SET notified_video_final = 1 WHERE url = ?", (url,)))
+                        print(f"🚀 【送信キュー追加】決勝動画: {db_round}戦 {db_loc}")
+                    else:
+                        print(f"🌙 【おやすみモード保留】決勝動画: {db_round}戦 {db_loc}")
 
                 if results_data and n_result == 0:
                     days_since_event = (now - event_dt).days if event_dt else 999

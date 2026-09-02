@@ -6,7 +6,7 @@ import urllib.parse
 from datetime import datetime, timedelta, timezone
 import requests
 from bs4 import BeautifulSoup
-import xml.etree.ElementTree as ET  # 追加: 警告を出さないための標準XMLパーサー
+import xml.etree.ElementTree as ET
 
 # ==========================================
 # 安全制御・環境変数設定
@@ -157,7 +157,6 @@ def init_db():
     """)
     conn.commit()
 
-    # ワンタイムDB救済処理
     c.execute("CREATE TABLE IF NOT EXISTS system_config (key TEXT PRIMARY KEY, value TEXT)")
     c.execute("SELECT value FROM system_config WHERE key = 'fix_19_video_reset'")
     if not c.fetchone():
@@ -328,6 +327,7 @@ def normalize_youtube_url(url_str):
         return f"https://www.youtube.com/watch?v={video_id}"
     return url_str
 
+# ★強化：想定外のワード（類義語や英語）にも対応する複数キーワード検知
 def extract_videos_from_html(html_content):
     videos = {}
     if not html_content: return videos
@@ -335,11 +335,17 @@ def extract_videos_from_html(html_content):
     
     headings = soup.find_all(['h2', 'h3', 'h4'])
     
+    # 網羅的なキーワード辞書
+    interview_kws = ["インタビュー", "優勝者の声", "コメント", "ヒーロー", "winner"]
+    final_kws = ["決勝", "ファイナル", "優勝決定戦", "final"]
+    exclude_kws = ["準決勝", "予選", "セミファイナル", "3位決定戦", "三位決定戦", "準々決勝", "semi"]
+
     for i, tag in enumerate(headings):
-        text = tag.get_text(strip=True)
+        text = tag.get_text(strip=True).lower()  # 小文字化して英語のゆらぎ（Final, FINAL）にも対応
         
-        is_interview = "インタビュー" in text
-        is_final = ("決勝" in text) and ("準決勝" not in text) and ("予選" not in text)
+        # 複数キーワードでの柔軟な判定
+        is_interview = any(kw in text for kw in interview_kws)
+        is_final = any(kw in text for kw in final_kws) and not any(kw in text for kw in exclude_kws)
         
         if is_interview or is_final:
             block_elements = []
@@ -370,9 +376,9 @@ def extract_videos_from_html(html_content):
             if vid_url:
                 normalized_url = normalize_youtube_url(vid_url)
                 if is_interview and "interview" not in videos:
-                    videos["interview"] = {"title": text, "url": normalized_url}
+                    videos["interview"] = {"title": tag.get_text(strip=True), "url": normalized_url}
                 if is_final and "final" not in videos:
-                    videos["final"] = {"title": text, "url": normalized_url}
+                    videos["final"] = {"title": tag.get_text(strip=True), "url": normalized_url}
                     
     return videos
 
@@ -501,33 +507,27 @@ def main():
     
     urls_to_check = []
 
-    # ----------------------------------------------------
-    # URL収集の最適化（サーバー負荷軽減：RSS利用）
-    # ----------------------------------------------------
     print("🔍 RSSフィードから最新記事を取得中...")
     rss_url = "https://www.kanritsuriba.com/at/feed/"
     res = fetch_url(rss_url)
     if res:
         try:
-            # 警告回避のため、標準ライブラリのXMLパーサーで安全に解析するよう変更
             root = ET.fromstring(res.content)
             for item in root.findall(".//item"):
                 link = item.find("link")
                 if link is not None and link.text:
                     url = link.text.strip()
-                    if "/at/" in url:  # エリアトーナメント関係の記事のみ抽出
+                    if "/at/" in url:  
                         urls_to_check.append(url)
         except Exception as e:
             print(f"⚠️ RSS解析エラー: {e}")
 
-    # データベース内の既存URLを取得（過去記事のタイマー監視を継続するため）
     c.execute("SELECT url FROM tournaments")
     for row in c.fetchall():
         urls_to_check.append(row[0])
 
     urls_to_check = list(set(urls_to_check))
     print(f"📊 チェック対象URL数: {len(urls_to_check)}件")
-    # ----------------------------------------------------
 
     notify_queue = []
     db_updates = []
@@ -541,11 +541,9 @@ def main():
                 n_video_final = check_row[1]
                 event_dt_str = check_row[2]
                 
-                # インタビュー動画・決勝動画の両方が送信完了した場合はスキップ
                 if n_video_int == 1 and n_video_final == 1:
                     continue
                 
-                # 大会開催日から「30日」経過したページは監視を終了（スキップ）
                 if event_dt_str:
                     try:
                         event_dt_db = datetime.strptime(event_dt_str, "%Y-%m-%d %H:%M:%S")

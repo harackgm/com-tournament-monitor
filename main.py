@@ -158,33 +158,19 @@ def init_db():
     conn.commit()
 
     c.execute("CREATE TABLE IF NOT EXISTS system_config (key TEXT PRIMARY KEY, value TEXT)")
-    
-    # ワンタイムDB救済処理（キャンセル誤検知の修復）
-    c.execute("SELECT value FROM system_config WHERE key = 'fix_cancel_false_positive'")
-    if not c.fetchone():
-        c.execute("UPDATE tournaments SET is_cancelled = 0 WHERE url LIKE '%cc044%' OR url LIKE '%2026_19%'")
-        c.execute("INSERT INTO system_config (key, value) VALUES ('fix_cancel_false_positive', '1')")
-        conn.commit()
 
-    # 第19戦インタビューの再通知（重複送信）を防ぐブロック処理
-    c.execute("SELECT value FROM system_config WHERE key = 'prevent_19_interview_duplicate'")
+    # ★新規追加：過去のテスト用CCデータを全削除して綺麗な状態で再通知させる
+    c.execute("SELECT value FROM system_config WHERE key = 'reset_cc_unknown_v2'")
     if not c.fetchone():
-        c.execute("UPDATE tournaments SET notified_video_interview = 1 WHERE url LIKE '%2026_19%'")
-        c.execute("INSERT INTO system_config (key, value) VALUES ('prevent_19_interview_duplicate', '1')")
+        c.execute("DELETE FROM tournaments WHERE url LIKE '%/cc%'")
+        c.execute("INSERT INTO system_config (key, value) VALUES ('reset_cc_unknown_v2', '1')")
         conn.commit()
-
-    # ★新規追加：チャレンジカップ「不明戦」データのワンタイムリセット（再通知させるための安全措置）
-    c.execute("SELECT value FROM system_config WHERE key = 'reset_cc_unknown_v1'")
-    if not c.fetchone():
-        c.execute("DELETE FROM tournaments WHERE url LIKE '%/cc%' AND round_num = '不明'")
-        c.execute("INSERT INTO system_config (key, value) VALUES ('reset_cc_unknown_v1', '1')")
-        conn.commit()
-        print("🔧 【DB更新】過去のチャレンジカップ『不明戦』データをリセットしました。")
+        print("🔧 【DB更新】チャレンジカップの過去通知データをリセットしました。")
 
     return conn, is_initial_setup
 
 def get_theme_color(location_name):
-    if any(kw in location_name for kw in ["栃木", "群ষ্ঠ", "キングフィッシャー", "上永野", "みどり", "なら山", "大芦", "増井", "宇都宮", "アメイズ", "中之沢", "赤城", "川場", "沼田", "宮城", "ベリーズ", "イワナ"]):
+    if any(kw in location_name for kw in ["栃木", "群馬", "キングフィッシャー", "上永野", "みどり", "なら山", "大芦", "増井", "宇都宮", "アメイズ", "中之沢", "赤城", "川場", "沼田", "宮城", "ベリーズ", "イワナ"]):
         return "#03A9F4"  
     elif any(kw in location_name for kw in ["千葉", "茨城", "ジョイバレー", "けんた", "千葉川すそ", "座間", "高萩", "エリアJ"]):
         return "#FF5722"  
@@ -256,10 +242,7 @@ def extract_tournament_results_from_html(html_content):
     
     for tag in soup.find_all(['h3', 'h4']):
         exact_heading = tag.get_text(strip=True)
-        
-        if "インタビュー" in exact_heading or "動画" in exact_heading:
-            continue
-
+        if "インタビュー" in exact_heading or "動画" in exact_heading: continue
         if rank_pattern.match(exact_heading):
             rank_match = rank_pattern.match(exact_heading)
             rank = rank_match.group(1)
@@ -269,16 +252,10 @@ def extract_tournament_results_from_html(html_content):
 
             cleaned_text = re.sub(r"^(優勝|準優勝|[1-3１-３一二三]位)\s*(?:\[\d+\])?\s*", "", exact_heading)
             name_match = re.search(r"^([^\s/【選手]+)", cleaned_text)
-            if name_match:
-                name = name_match.group(1).strip()
-            else:
-                name = cleaned_text.strip()
-            
+            name = name_match.group(1).strip() if name_match else cleaned_text.strip()
             name = re.sub(r"[\s\u3000/・\-]", "", name)
 
-            if not name or len(name) < 2 or "タックル" in name or "コメント" in name:
-                continue
-                
+            if not name or len(name) < 2 or "タックル" in name or "コメント" in name: continue
             jump_target = exact_heading[:20]
 
             img_url = None
@@ -286,30 +263,25 @@ def extract_tournament_results_from_html(html_content):
             count = 0
             while nxt and count < 4:
                 img = nxt.find('img') if hasattr(nxt, 'find') else None
-                if not img and nxt.name == 'img':
-                    img = nxt
+                if not img and nxt.name == 'img': img = nxt
                 if img and img.get('src'):
                     img_url = img.get('src')
-                    if img_url.startswith('/'):
-                        img_url = "https://www.kanritsuriba.com" + img_url
+                    if img_url.startswith('/'): img_url = "https://www.kanritsuriba.com" + img_url
                     break
                 nxt = nxt.find_next_sibling()
                 count += 1
                 
             if not any(r['name'] == name for r in results):
                 results.append({"rank": rank, "name": name, "image_url": img_url, "jump_target": jump_target})
-                
     return results
 
 def get_winner_congratulations_message(cursor, winner_name, current_round_num):
     clean_winner_name = re.sub(r"[\s\u3000/・\-]", "", winner_name)
-
     cursor.execute("SELECT round_num, player_name FROM tournament_winners WHERE rank = '優勝'")
     rows = cursor.fetchall()
 
     past_wins = 0
     is_consecutive = False
-
     try:
         current_r = int(re.sub(r"\D", "", str(current_round_num))) if re.sub(r"\D", "", str(current_round_num)) else 0
         prev_r = current_r - 1
@@ -318,46 +290,34 @@ def get_winner_congratulations_message(cursor, winner_name, current_round_num):
 
     for r_num, p_name in rows:
         clean_p_name = re.sub(r"[\s\u3000/・\-]", "", p_name)
-        if str(r_num) == str(current_round_num):
-            continue
-            
+        if str(r_num) == str(current_round_num): continue
         if clean_winner_name == clean_p_name:
             past_wins += 1
             if prev_r is not None and str(prev_r) in str(r_num):
                 is_consecutive = True
 
-    if is_consecutive:
-        return f"🎉 圧巻の2連続優勝おめでとうございます！強すぎます！🔥"
-    elif past_wins >= 1:
-        return f"🎉 今季{past_wins + 1}勝目のお祝いを申し上げます！素晴らしい快進撃です！👏"
-    else:
-        return "🎉 優勝おめでとうございます！見事な勝利です！"
+    if is_consecutive: return f"🎉 圧巻の2連続優勝おめでとうございます！強すぎます！🔥"
+    elif past_wins >= 1: return f"🎉 今季{past_wins + 1}勝目のお祝いを申し上げます！素晴らしい快進撃です！👏"
+    else: return "🎉 優勝おめでとうございます！見事な勝利です！"
 
 def normalize_youtube_url(url_str):
-    if not url_str:
-        return url_str
-    if url_str.startswith("//"):
-        url_str = "https:" + url_str
+    if not url_str: return url_str
+    if url_str.startswith("//"): url_str = "https:" + url_str
     embed_match = re.search(r"(?:youtube\.com/embed/|youtu\.be/|youtube\.com/watch\?v=)([a-zA-Z0-9_-]+)", url_str)
-    if embed_match:
-        video_id = embed_match.group(1)
-        return f"https://www.youtube.com/watch?v={video_id}"
+    if embed_match: return f"https://www.youtube.com/watch?v={embed_match.group(1)}"
     return url_str
 
 def extract_videos_from_html(html_content):
     videos = {}
     if not html_content: return videos
     soup = BeautifulSoup(html_content, "html.parser")
-    
     headings = soup.find_all(['h2', 'h3', 'h4'])
-    
     interview_kws = ["インタビュー", "優勝者の声", "コメント", "ヒーロー", "winner"]
     final_kws = ["決勝", "ファイナル", "優勝決定戦", "final"]
     exclude_kws = ["準決勝", "予選", "セミファイナル", "3位決定戦", "三位決定戦", "準々決勝", "semi"]
 
     for i, tag in enumerate(headings):
         text = tag.get_text(strip=True).lower()
-        
         is_interview = any(kw in text for kw in interview_kws)
         is_final = any(kw in text for kw in final_kws) and not any(kw in text for kw in exclude_kws)
         
@@ -367,7 +327,6 @@ def extract_videos_from_html(html_content):
             while curr and curr != (headings[i+1] if i+1 < len(headings) else None):
                 block_elements.append(curr)
                 curr = curr.next_element
-                
             block_soup = BeautifulSoup("".join([str(e) for e in block_elements]), "html.parser")
             
             vid_url = None
@@ -376,25 +335,30 @@ def extract_videos_from_html(html_content):
                 if 'youtube' in src or 'youtu.be' in src:
                     vid_url = src
                     break
-                    
             if not vid_url:
                 for a_tag in block_soup.find_all('a'):
-                    href = a_tag.get('href', '')
-                    title = a_tag.get('title', '')
-                    text_cnt = a_tag.get_text()
-                    target_str = f"{href} {title} {text_cnt}"
+                    target_str = f"{a_tag.get('href', '')} {a_tag.get('title', '')} {a_tag.get_text()}"
                     if 'youtube.com' in target_str or 'youtu.be' in target_str:
-                        vid_url = href or title
+                        vid_url = a_tag.get('href', '') or a_tag.get('title', '')
                         break
-                        
             if vid_url:
                 normalized_url = normalize_youtube_url(vid_url)
-                if is_interview and "interview" not in videos:
-                    videos["interview"] = {"title": tag.get_text(strip=True), "url": normalized_url}
-                if is_final and "final" not in videos:
-                    videos["final"] = {"title": tag.get_text(strip=True), "url": normalized_url}
-                    
+                if is_interview and "interview" not in videos: videos["interview"] = {"title": tag.get_text(strip=True), "url": normalized_url}
+                if is_final and "final" not in videos: videos["final"] = {"title": tag.get_text(strip=True), "url": normalized_url}
     return videos
+
+# ★タイトルテキスト（h1等）も取得できるように修正
+def fetch_page_data(url):
+    res = fetch_url(url)
+    if res and res.status_code == 200:
+        try:
+            soup = BeautifulSoup(res.text, "html.parser")
+            h1_tag = soup.find('h1', class_='entry-title')
+            title_text = h1_tag.get_text(strip=True) if h1_tag else ""
+            content_area = soup.find("div", class_="entry-content") or soup
+            return content_area.get_text(separator=" ", strip=True), str(content_area), title_text
+        except Exception: pass
+    return "", "", ""
 
 # ==========================================
 # LINE Push Message (Flex Message カルーセル)
@@ -403,12 +367,19 @@ def send_line_flex(header_title, round_num, location, event_date_str, entry_str,
     if not LINE_CHANNEL_ACCESS_TOKEN or not LINE_USER_ID: return
     url = "https://api.line.me/v2/bot/message/push"
     headers = {"Content-Type": "application/json", "Authorization": f"Bearer {LINE_CHANNEL_ACCESS_TOKEN}"}
+    
+    # ★チャレンジカップと通常大会で表記を美しく出し分ける
+    is_cc = "/cc" in page_url
+    title_main = f"第{round_num}回" if is_cc else f"第{round_num}戦"
+    title_sub = location if is_cc else f"{location}大会"
+
     body_contents = [
-        {"type": "text", "text": f"第{round_num}戦", "weight": "bold", "size": "xl", "color": "#333333"},
-        {"type": "text", "text": f"{location}大会", "weight": "bold", "size": "md", "color": "#555555", "wrap": True},
+        {"type": "text", "text": title_main, "weight": "bold", "size": "xl", "color": "#333333"},
+        {"type": "text", "text": title_sub, "weight": "bold", "size": "md", "color": "#555555", "wrap": True},
         {"type": "separator"},
         {"type": "box", "layout": "vertical", "spacing": "xs", "contents": [{"type": "text", "text": "📅 大会開催日", "size": "xs", "color": "#888888"}, {"type": "text", "text": event_date_str, "size": "xl", "color": "#333333"}]},
-        {"type": "box", "layout": "vertical", "spacing": "xs", "contents": [{"type": "text", "text": "⏰ エントリー開始日時", "size": "xs", "color": "#888888"}, {"type": "text", "text": entry_str, "size": "xl", "color": "#E53935"}]}
+        # ★複数行のエントリー日時に対応するため、sizeをmdに変更しwrapをTrueに設定
+        {"type": "box", "layout": "vertical", "spacing": "xs", "contents": [{"type": "text", "text": "⏰ エントリー開始日時", "size": "xs", "color": "#888888"}, {"type": "text", "text": entry_str, "size": "md", "color": "#E53935", "wrap": True}]}
     ]
     if extra_info:
         body_contents.append({"type": "separator"})
@@ -417,7 +388,7 @@ def send_line_flex(header_title, round_num, location, event_date_str, entry_str,
             body_contents.append({"type": "separator"})
             body_contents.append({"type": "box", "layout": "vertical", "spacing": "xs", "contents": [{"type": "text", "text": "🌤 明日の天候・応援", "size": "xs", "color": "#888888"}, {"type": "text", "text": extra_info["weather_advice"], "size": "sm", "color": "#333333", "wrap": True}]})
 
-    flex_payload = {"to": LINE_USER_ID, "messages": [{"type": "flex", "altText": f"【{header_title}】第{round_num}戦 {location}大会", "contents": {"type": "carousel", "contents": [{"type": "bubble", "header": {"type": "box", "layout": "vertical", "backgroundColor": theme_color, "contents": [{"type": "text", "text": f"🎣 {header_title}", "color": "#FFFFFF", "weight": "bold", "size": "xs"}]}, "body": {"type": "box", "layout": "vertical", "spacing": "md", "contents": body_contents}, "footer": {"type": "box", "layout": "vertical", "contents": [{"type": "button", "action": {"type": "uri", "label": "🔗 詳細・エントリー", "uri": page_url}, "style": "primary", "color": theme_color}]}}]}}]}
+    flex_payload = {"to": LINE_USER_ID, "messages": [{"type": "flex", "altText": f"【{header_title}】{title_main} {title_sub}", "contents": {"type": "carousel", "contents": [{"type": "bubble", "header": {"type": "box", "layout": "vertical", "backgroundColor": theme_color, "contents": [{"type": "text", "text": f"🎣 {header_title}", "color": "#FFFFFF", "weight": "bold", "size": "xs"}]}, "body": {"type": "box", "layout": "vertical", "spacing": "md", "contents": body_contents}, "footer": {"type": "box", "layout": "vertical", "contents": [{"type": "button", "action": {"type": "uri", "label": "🔗 詳細・エントリー", "uri": page_url}, "style": "primary", "color": theme_color}]}}]}}]}
     try: requests.post(url, headers=headers, json=flex_payload, timeout=TIMEOUT_SEC)
     except Exception: pass
 
@@ -425,6 +396,10 @@ def send_result_line_flex(header_title, round_num, location, results, page_url, 
     if not LINE_CHANNEL_ACCESS_TOKEN or not LINE_USER_ID: return
     url = "https://api.line.me/v2/bot/message/push"
     headers = {"Content-Type": "application/json", "Authorization": f"Bearer {LINE_CHANNEL_ACCESS_TOKEN}"}
+    
+    is_cc = "/cc" in page_url
+    title_text_str = f"第{round_num}回 {location}" if is_cc else f"第{round_num}戦 {location}"
+
     bubbles = []
     for res in results[:10]:
         rank = res['rank']
@@ -442,9 +417,8 @@ def send_result_line_flex(header_title, round_num, location, results, page_url, 
         body_contents = [
             {"type": "text", "text": icon_emoji, "size": "4xl", "margin": "md"},
             {"type": "text", "text": name, "weight": "bold", "size": "xl", "margin": "md", "color": "#333333", "wrap": True},
-            {"type": "text", "text": f"第{round_num}戦 {location}", "size": "xs", "color": "#888888", "margin": "sm", "wrap": True}
+            {"type": "text", "text": title_text_str, "size": "xs", "color": "#888888", "margin": "sm", "wrap": True}
         ]
-
         if is_winner and res.get('congrat_msg'):
             body_contents.append({"type": "separator", "margin": "md"})
             body_contents.append({"type": "text", "text": res['congrat_msg'], "size": "xs", "color": "#D32F2F", "weight": "bold", "margin": "md", "wrap": True})
@@ -458,21 +432,11 @@ def send_result_line_flex(header_title, round_num, location, results, page_url, 
             "body": {"type": "box", "layout": "vertical", "alignItems": "center", "contents": body_contents}, 
             "footer": {"type": "box", "layout": "vertical", "contents": [{"type": "button", "action": {"type": "uri", "label": "🔗 結果詳細を見る", "uri": target_url}, "style": "primary", "color": bg_color}]}
         }
-        
         if img_url:
-            bubble["hero"] = {
-                "type": "image", 
-                "url": img_url, 
-                "size": "full", 
-                "aspectRatio": "3:4", 
-                "aspectMode": "fit", 
-                "backgroundColor": "#FFFFFF"
-            }
+            bubble["hero"] = {"type": "image", "url": img_url, "size": "full", "aspectRatio": "3:4", "aspectMode": "fit", "backgroundColor": "#FFFFFF"}
             bubble["body"]["contents"].pop(0)
-            
         bubbles.append(bubble)
-
-    try: requests.post(url, headers=headers, json={"to": LINE_USER_ID, "messages": [{"type": "flex", "altText": f"【大会結果】第{round_num}戦 {location}", "contents": {"type": "carousel", "contents": bubbles}}]}, timeout=TIMEOUT_SEC)
+    try: requests.post(url, headers=headers, json={"to": LINE_USER_ID, "messages": [{"type": "flex", "altText": f"【大会結果】{title_text_str}", "contents": {"type": "carousel", "contents": bubbles}}]}, timeout=TIMEOUT_SEC)
     except Exception: pass
 
 def send_video_line_flex(header_title, round_num, location, video_data, page_url, theme_color):
@@ -480,31 +444,25 @@ def send_video_line_flex(header_title, round_num, location, video_data, page_url
     url = "https://api.line.me/v2/bot/message/push"
     headers = {"Content-Type": "application/json", "Authorization": f"Bearer {LINE_CHANNEL_ACCESS_TOKEN}"}
     
+    is_cc = "/cc" in page_url
+    title_main = f"第{round_num}回" if is_cc else f"第{round_num}戦"
+    title_sub = location if is_cc else f"{location}大会"
+
     vid_title = video_data.get("title", "動画が公開されました")
     vid_url = video_data.get("url", page_url)
     
     body_contents = [
-        {"type": "text", "text": f"第{round_num}戦", "weight": "bold", "size": "xl", "color": "#333333"},
-        {"type": "text", "text": f"{location}大会", "weight": "bold", "size": "md", "color": "#555555", "wrap": True},
+        {"type": "text", "text": title_main, "weight": "bold", "size": "xl", "color": "#333333"},
+        {"type": "text", "text": title_sub, "weight": "bold", "size": "md", "color": "#555555", "wrap": True},
         {"type": "separator"},
         {"type": "box", "layout": "vertical", "spacing": "xs", "margin": "md", "contents": [{"type": "text", "text": vid_title, "weight": "bold", "size": "sm", "color": "#E53935", "wrap": True}]}
     ]
     flex_payload = {
         "to": LINE_USER_ID,
-        "messages": [{"type": "flex", "altText": f"{header_title} 第{round_num}戦 {location}", "contents": {"type": "bubble", "header": {"type": "box", "layout": "vertical", "backgroundColor": theme_color, "contents": [{"type": "text", "text": f"▶️ {header_title}", "color": "#FFFFFF", "weight": "bold", "size": "xs"}]}, "body": {"type": "box", "layout": "vertical", "spacing": "md", "contents": body_contents}, "footer": {"type": "box", "layout": "vertical", "spacing": "sm", "contents": [{"type": "button", "action": {"type": "uri", "label": "▶️ 動画を見る", "uri": vid_url}, "style": "primary", "color": "#D32F2F"}, {"type": "button", "action": {"type": "uri", "label": "🔗 大会ページへ", "uri": page_url}, "style": "secondary"}]}}}]
+        "messages": [{"type": "flex", "altText": f"{header_title} {title_main} {title_sub}", "contents": {"type": "bubble", "header": {"type": "box", "layout": "vertical", "backgroundColor": theme_color, "contents": [{"type": "text", "text": f"▶️ {header_title}", "color": "#FFFFFF", "weight": "bold", "size": "xs"}]}, "body": {"type": "box", "layout": "vertical", "spacing": "md", "contents": body_contents}, "footer": {"type": "box", "layout": "vertical", "spacing": "sm", "contents": [{"type": "button", "action": {"type": "uri", "label": "▶️ 動画を見る", "uri": vid_url}, "style": "primary", "color": "#D32F2F"}, {"type": "button", "action": {"type": "uri", "label": "🔗 大会ページへ", "uri": page_url}, "style": "secondary"}]}}}]
     }
     try: requests.post(url, headers=headers, json=flex_payload, timeout=TIMEOUT_SEC)
     except Exception: pass
-
-def fetch_page_data(url):
-    res = fetch_url(url)
-    if res and res.status_code == 200:
-        try:
-            soup = BeautifulSoup(res.text, "html.parser")
-            content_area = soup.find("div", class_="entry-content") or soup
-            return content_area.get_text(separator=" ", strip=True), str(content_area)
-        except Exception: pass
-    return "", ""
 
 # ==========================================
 # メイン監視処理（一般公開・本番運用モード）
@@ -518,7 +476,6 @@ def main():
 
     current_year = now.year
     is_night_mode = (now.hour >= NIGHT_MODE_START or now.hour < NIGHT_MODE_END)
-    
     urls_to_check = []
 
     print("🔍 RSSフィードから最新記事を取得中...")
@@ -531,14 +488,11 @@ def main():
                 link = item.find("link")
                 if link is not None and link.text:
                     url = link.text.strip()
-                    if "/at/" in url:  
-                        urls_to_check.append(url)
-        except Exception as e:
-            print(f"⚠️ RSS解析エラー: {e}")
+                    if "/at/" in url: urls_to_check.append(url)
+        except Exception as e: print(f"⚠️ RSS解析エラー: {e}")
 
     c.execute("SELECT url FROM tournaments")
-    for row in c.fetchall():
-        urls_to_check.append(row[0])
+    for row in c.fetchall(): urls_to_check.append(row[0])
 
     urls_to_check = list(set(urls_to_check))
     print(f"📊 チェック対象URL数: {len(urls_to_check)}件")
@@ -551,18 +505,12 @@ def main():
             c.execute("SELECT notified_video_interview, notified_video_final, event_datetime FROM tournaments WHERE url = ?", (url,))
             check_row = c.fetchone()
             if check_row:
-                n_video_int = check_row[0]
-                n_video_final = check_row[1]
-                event_dt_str = check_row[2]
-                
-                if n_video_int == 1 and n_video_final == 1:
-                    continue
-                
+                n_video_int, n_video_final, event_dt_str = check_row
+                if n_video_int == 1 and n_video_final == 1: continue
                 if event_dt_str:
                     try:
                         event_dt_db = datetime.strptime(event_dt_str, "%Y-%m-%d %H:%M:%S")
-                        if (now - event_dt_db).days > 30:
-                            continue
+                        if (now - event_dt_db).days > 30: continue
                     except Exception: pass
 
             print(f"🔍 ページ解析中: {url}")
@@ -570,56 +518,74 @@ def main():
             url_year = int(match_year.group(1)) if match_year else current_year
 
             time.sleep(0.5)
-            text_p1, html_p1 = fetch_page_data(url)
+            # ★戻り値を3つ受け取るように修正
+            text_p1, html_p1, title_p1 = fetch_page_data(url)
             sub_url = url.rstrip("/") + "/2/"
             time.sleep(0.5)
-            text_p2, html_p2 = fetch_page_data(sub_url)
+            text_p2, html_p2, title_p2 = fetch_page_data(sub_url)
 
             combined_text = (text_p2 + " " + text_p1).strip()
             combined_html = html_p2 + html_p1
             if not combined_text: continue
 
+            # =========================================================
+            # ★ 大会名（location）とエントリー日時の取得ロジック（CC対応版）
+            # =========================================================
             if "/cc" in url:
                 match_cc = re.search(r"cc(\d+)", url)
                 round_num = str(int(match_cc.group(1))) if match_cc else "不明"
                 
-                match_loc = re.search(r"チャレンジカップ(?:in|[\s ]+)([^\s大会を]+)", combined_text)
-                if match_loc:
-                    location = f"CC {match_loc.group(1)}"
+                # H1タグのタイトル（例: 第44回チャレンジカップinアングラーズベース赤城山）から「第〇〇回」を削って抽出
+                loc_match = re.search(r"第\d+回(.*)", title_p1)
+                location = loc_match.group(1).strip() if loc_match else (title_p1 or "チャレンジカップ")
+                
+                # 複数回エントリー日時を抽出
+                entry_dates = []
+                first_entry_dt = None
+                for i in range(1, 4):
+                    # 「●1次エントリー開始期間：8月18日（火）20:00」のような文字列を検知
+                    pattern = re.search(rf"{i}次エントリー.*?(\d{{1,2}})月(\d{{1,2}})日.*?(\d{{1,2}}):(\d{{2}})", combined_text)
+                    if pattern:
+                        m, d, hh, mm = map(int, pattern.groups())
+                        entry_year = url_year - 1 if m >= 11 else url_year
+                        try:
+                            dt = datetime(entry_year, m, d, hh, mm)
+                            w = ["月", "火", "水", "木", "金", "土", "日"][dt.weekday()]
+                            entry_dates.append(f"{i}次: {m}/{d}({w}) {hh:02d}:{mm:02d}")
+                            if first_entry_dt is None or dt < first_entry_dt:
+                                first_entry_dt = dt
+                        except ValueError: pass
+                
+                if entry_dates:
+                    entry_str = "\n".join(entry_dates)
+                    entry_dt = first_entry_dt
                 else:
-                    location = "チャレンジカップ"
+                    entry_dt, entry_str = parse_entry_datetime(text_p2, url_year)
+                    if not entry_dt: entry_dt, entry_str = parse_entry_datetime(text_p1, url_year)
             else:
                 match_title = re.search(r"第(\d+)戦([^\s大会を]+)", combined_text)
                 round_num = match_title.group(1) if match_title else "不明"
                 location = match_title.group(2) if match_title else "対象会場"
+                entry_dt, entry_str = parse_entry_datetime(text_p2, url_year)
+                if not entry_dt: entry_dt, entry_str = parse_entry_datetime(text_p1, url_year)
+            # =========================================================
 
             event_dt, event_date_str = extract_event_date_info(combined_text, url_year)
-            entry_dt, entry_str = parse_entry_datetime(text_p2, url_year)
-            if not entry_dt: entry_str = parse_entry_datetime(text_p1, url_year)
-
             reception_time = extract_reception_time(combined_text)
             fee = extract_fee(combined_text)
             theme_color = get_theme_color(location)
-
             cancel_keywords = ["見送る", "中止", "延期", "順延", "取りやめ", "開催を見送", "開催中止"]
             is_cancelled = 1 if any(kw in combined_text for kw in cancel_keywords) else 0
 
             results_data = extract_tournament_results_from_html(combined_html)
             videos_data = extract_videos_from_html(combined_html)
 
-            if videos_data:
-                print(f"🎬 抽出された動画データ [{url}]: {videos_data}")
-
             winner_name = ""
             for r in results_data:
                 if r['rank'] == "優勝":
                     winner_name = r['name']
                     r['congrat_msg'] = get_winner_congratulations_message(c, winner_name, round_num)
-
-                c.execute(
-                    "INSERT OR REPLACE INTO tournament_winners (url, round_num, rank, player_name) VALUES (?, ?, ?, ?)",
-                    (url, round_num, r['rank'], r['name'])
-                )
+                c.execute("INSERT OR REPLACE INTO tournament_winners (url, round_num, rank, player_name) VALUES (?, ?, ?, ?)", (url, round_num, r['rank'], r['name']))
 
             c.execute("SELECT * FROM tournaments WHERE url = ?", (url,))
             row = c.fetchone()
@@ -634,60 +600,41 @@ def main():
                 )
                 if not is_initial_setup and not is_night_mode:
                     notify_queue.append({"type": "info", "header": "🆕【新規大会開催予定】", "round_num": round_num, "location": location, "event_date_str": event_date_str, "entry_str": entry_str, "url": url, "theme_color": theme_color})
-                    print(f"🚀 【送信キュー追加】新規大会(初回): 第{round_num}戦 {location}")
+                    print(f"🚀 【送信キュー追加】新規大会: 第{round_num}回/戦 {location}")
             else:
                 (db_url, db_round, db_loc, db_event_date, db_event_dt_str, db_entry_dt_str, db_entry_str, db_reception, db_fee, db_text, db_cancelled, n_new, n_1d, n_1h, n_15m, n_event_1d, n_just, n_after_24h, n_result, n_video_int, n_video_fin, db_winner) = row
 
                 if winner_name and db_winner != winner_name:
                     c.execute("UPDATE tournaments SET winner_name = ? WHERE url = ?", (winner_name, url))
-
                 if "interview" in videos_data and n_video_int == 0:
                     if not is_night_mode:
                         notify_queue.append({"type": "video", "header": "🎤【優勝者インタビュー公開】", "round_num": round_num, "location": location, "video_data": videos_data["interview"], "url": url, "theme_color": theme_color})
                         db_updates.append(("UPDATE tournaments SET notified_video_interview = 1 WHERE url = ?", (url,)))
-                        print(f"🚀 【送信キュー追加】インタビュー動画: 第{round_num}戦 {location}")
-                    else:
-                        print(f"🌙 【おやすみモード保留】インタビュー動画: 第{round_num}戦 {location}")
-
                 if "final" in videos_data and n_video_fin == 0:
                     if not is_night_mode:
                         notify_queue.append({"type": "video", "header": "🎥【決勝戦 動画公開】", "round_num": round_num, "location": location, "video_data": videos_data["final"], "url": url, "theme_color": theme_color})
                         db_updates.append(("UPDATE tournaments SET notified_video_final = 1 WHERE url = ?", (url,)))
-                        print(f"🚀 【送信キュー追加】決勝動画: 第{round_num}戦 {location}")
-                    else:
-                        print(f"🌙 【おやすみモード保留】決勝動画: 第{round_num}戦 {location}")
-
                 if results_data and n_result == 0:
                     days_since_event = (now - event_dt).days if event_dt else 999
-                    if days_since_event > 14:
-                        db_updates.append(("UPDATE tournaments SET notified_result = 1 WHERE url = ?", (url,)))
+                    if days_since_event > 14: db_updates.append(("UPDATE tournaments SET notified_result = 1 WHERE url = ?", (url,)))
                     else:
                         if not is_night_mode:
                             notify_queue.append({"type": "result", "header": "🎊【大会結果発表！】", "round_num": round_num, "location": location, "results": results_data, "url": url, "theme_color": theme_color})
                             db_updates.append(("UPDATE tournaments SET notified_result = 1 WHERE url = ?", (url,)))
-                            print(f"🚀 【送信キュー追加】大会結果: 第{round_num}戦 {location}")
-
                 if n_new == 0 and not is_night_mode:
                     notify_queue.append({"type": "info", "header": "🆕【新規大会開催予定】", "round_num": round_num, "location": location, "event_date_str": event_date_str, "entry_str": entry_str, "url": url, "theme_color": theme_color})
                     c.execute("UPDATE tournaments SET notified_new = 1 WHERE url = ?", (url,))
-                    print(f"🚀 【送信キュー追加】新規大会(未通知分): 第{round_num}戦 {location}")
-
                 if is_cancelled == 1 and db_cancelled == 0:
                     notify_queue.append({"type": "info", "header": "🚨【緊急：開催中止・変更】", "round_num": round_num, "location": location, "event_date_str": event_date_str, "entry_str": "開催中止・変更が発生しました", "url": url, "theme_color": "#D32F2F"})
                     c.execute("UPDATE tournaments SET is_cancelled = 1 WHERE url = ?", (url,))
-                    print(f"🚀 【送信キュー追加】開催中止: 第{round_num}戦 {location}")
                     continue
 
                 is_date_changed = (db_event_date != event_date_str or db_entry_str != entry_str)
                 is_info_changed = (db_reception != reception_time or db_fee != fee)
-                
-                # ★DB更新時にround_numとlocationも最新のもので上書き更新するように修正
                 if is_date_changed or is_info_changed or (db_round != round_num) or (db_loc != location):
                     if is_date_changed and not is_night_mode:
                         if not is_initial_setup and (db_event_date == "開催日未定" or db_entry_str == "エントリー日時未定"):
                             notify_queue.append({"type": "info", "header": "📢【大会情報更新】", "round_num": round_num, "location": location, "event_date_str": event_date_str, "entry_str": entry_str, "url": url, "theme_color": theme_color})
-                            print(f"🚀 【送信キュー追加】情報更新: 第{round_num}戦 {location}")
-                    
                     c.execute("UPDATE tournaments SET round_num = ?, location = ?, event_date = ?, entry_datetime = ?, entry_str = ?, reception_time = ?, fee = ?, original_text = ? WHERE url = ?", (round_num, location, event_date_str, entry_dt.strftime("%Y-%m-%d %H:%M:%S") if entry_dt else None, entry_str, reception_time, fee, combined_text, url))
 
                 if entry_dt and is_cancelled == 0:
@@ -697,45 +644,36 @@ def main():
                             if not n_15m:
                                 notify_queue.append({"type": "info", "header": "🔥【15分前直前リマインド】", "round_num": round_num, "location": location, "event_date_str": event_date_str, "entry_str": entry_str, "url": url, "theme_color": theme_color})
                                 db_updates.append(("UPDATE tournaments SET notified_15m=1, notified_1h=1, notified_1d=1 WHERE url=?", (url,)))
-                                print(f"🚀 【送信キュー追加】15分前: 第{round_num}戦 {location}")
                         elif timedelta(0) < time_diff <= timedelta(hours=1):
                             if not n_1h:
                                 notify_queue.append({"type": "info", "header": "⏰【1時間前リマインド】", "round_num": round_num, "location": location, "event_date_str": event_date_str, "entry_str": entry_str, "url": url, "theme_color": theme_color})
                                 db_updates.append(("UPDATE tournaments SET notified_1h=1, notified_1d=1 WHERE url=?", (url,)))
-                                print(f"🚀 【送信キュー追加】1時間前: 第{round_num}戦 {location}")
                         elif timedelta(0) < time_diff <= timedelta(days=1):
                             if not n_1d:
                                 if not is_night_mode:
                                     is_today = (entry_dt.date() == now.date())
                                     notify_queue.append({"type": "info", "header": "【本日エントリー開始】" if is_today else "【明日エントリー開始】", "round_num": round_num, "location": location, "event_date_str": event_date_str, "entry_str": entry_str, "url": url, "theme_color": theme_color})
                                     db_updates.append(("UPDATE tournaments SET notified_1d=1 WHERE url=?", (url,)))
-                                    print(f"🚀 【送信キュー追加】前日リマインド: 第{round_num}戦 {location}")
                     else:
                         passed_time = now - entry_dt
                         target_10am = (entry_dt + timedelta(days=1)).replace(hour=10, minute=0, second=0, microsecond=0)
-                        
                         if timedelta(0) <= passed_time <= timedelta(minutes=15) and not n_just:
                             notify_queue.append({"type": "info", "header": "🏁【エントリー開始！】", "round_num": round_num, "location": location, "event_date_str": event_date_str, "entry_str": entry_str, "url": url, "theme_color": theme_color})
                             db_updates.append(("UPDATE tournaments SET notified_just = 1 WHERE url = ?", (url,)))
-                            print(f"🚀 【送信キュー追加】開始ジャスト: 第{round_num}戦 {location}")
                         elif target_10am <= now <= target_10am + timedelta(hours=12) and not n_after_24h:
                             if not is_night_mode:
                                 notify_queue.append({"type": "info", "header": "⚠️【エントリー忘れ防止】昨日からエントリーが開始されています！", "round_num": round_num, "location": location, "event_date_str": event_date_str, "entry_str": entry_str, "url": url, "theme_color": theme_color})
                                 db_updates.append(("UPDATE tournaments SET notified_after_24h = 1 WHERE url = ?", (url,)))
-                                print(f"🚀 【送信キュー追加】開始翌日リマインド: 第{round_num}戦 {location}")
 
                 if event_dt and is_cancelled == 0:
                     is_day_before = (now.date() == (event_dt.date() - timedelta(days=1)))
                     is_in_target_hours = (EVENT_1D_HOUR_START <= now.hour < EVENT_1D_HOUR_END)
-
                     if is_day_before and is_in_target_hours and not n_event_1d:
                         weather_advice = get_weather_advice(location)
                         notify_queue.append({"type": "info", "header": "📅【明日大会開催！直前案内】", "round_num": round_num, "location": location, "event_date_str": event_date_str, "entry_str": entry_str, "url": url, "theme_color": theme_color, "extra_info": {"reception": reception_time, "fee": fee, "weather_advice": weather_advice}})
                         db_updates.append(("UPDATE tournaments SET notified_event_1d = 1 WHERE url = ?", (url,)))
-                        print(f"🚀 【送信キュー追加】大会前日リマインド: 第{round_num}戦 {location}")
 
-        except Exception as e:
-            pass
+        except Exception as e: pass
 
     unique_notify_queue = []
     seen = set()
@@ -744,19 +682,15 @@ def main():
         if identifier not in seen:
             seen.add(identifier)
             unique_notify_queue.append(item)
-            
     notify_queue = unique_notify_queue
 
-    for query, params in db_updates:
-        c.execute(query, params)
-
+    for query, params in db_updates: c.execute(query, params)
     conn.commit()
     conn.close()
 
-    # 安全装置：MAX_NOTIFY_LIMIT 制御
     if not is_initial_setup and notify_queue:
         if len(notify_queue) > MAX_NOTIFY_LIMIT:
-            print(f"⚠️ 大量検知({len(notify_queue)}件)のため、LINEへの連続送信をストップしました。（ユーザーへのシステム通知はスキップ）")
+            print(f"⚠️ 大量検知({len(notify_queue)}件)のため、LINEへの連続送信をストップしました。")
         else:
             for item in notify_queue:
                 if item.get("type") == "result":
@@ -765,7 +699,7 @@ def main():
                     send_video_line_flex(item["header"], item["round_num"], item["location"], item["video_data"], item["url"], item["theme_color"])
                 else:
                     send_line_flex(item["header"], item["round_num"], item["location"], item["event_date_str"], item["entry_str"], item["url"], item["theme_color"], item.get("extra_info"))
-                print(f"✅ LINE送信完了: {item['header']} / 第{item['round_num']}戦 {item['location']}")
+                print(f"✅ LINE送信完了: {item['header']} / 第{item['round_num']}回/戦 {item['location']}")
 
     print("全自動監視処理が正常完了しました。")
 

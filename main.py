@@ -159,13 +159,11 @@ def init_db():
 
     c.execute("CREATE TABLE IF NOT EXISTS system_config (key TEXT PRIMARY KEY, value TEXT)")
 
-    # エントリー条件の抽出・連携のため、チャレンジカップのデータをリセット(v5)
-    c.execute("SELECT value FROM system_config WHERE key = 'reset_cc_unknown_v5'")
+    # 抽出ロジック微調整(v6)のためキー更新のみ（DB削除は行わない安全更新）
+    c.execute("SELECT value FROM system_config WHERE key = 'system_update_v6'")
     if not c.fetchone():
-        c.execute("DELETE FROM tournaments WHERE url LIKE '%/cc%'")
-        c.execute("INSERT INTO system_config (key, value) VALUES ('reset_cc_unknown_v5', '1')")
+        c.execute("INSERT INTO system_config (key, value) VALUES ('system_update_v6', '1')")
         conn.commit()
-        print("🔧 【DB更新】エントリー条件通知機能追加のため、チャレンジカップのデータをリセットしました。")
 
     return conn, is_initial_setup
 
@@ -226,11 +224,13 @@ def parse_entry_datetime(text, year):
     return None, "エントリー日時未定"
 
 def extract_reception_time(text):
-    match = re.search(r"【?受\s*付】?[：:\s]*(\d{1,2}[:：]\d{2}\s*[\~～\-]\s*\d{1,2}[:：]\d{2}|\d{1,2}[:：]\d{2}\s*より|\d{1,2}[:：]\d{2})", text)
+    # 受付：6:00～6:30 や 6:00より など、表記ゆれに柔軟に対応
+    match = re.search(r"【?受\s*付】?[：:\s]*([0-2]?[0-9][:：][0-5][0-9](?:\s*[\~～\-]\s*[0-2]?[0-9][:：][0-5][0-9])?|[^。、\n]{2,10}より)", text)
     return match.group(1).strip() if match else "情報参照"
 
 def extract_fee(text):
-    match = re.search(r"【?(?:参加費用|参加費|費用)】?[：:\s]*([\d,]+円(?:\s*[\(（][^\)）]*[\)）])?)", text)
+    # 参加費用：8,000円 や 参加費 6,000円（半日券込）など、ゆらぎに対応
+    match = re.search(r"【?(?:参加費用|参加費|費用)】?[：:\s]*([^。、\n]{2,20}円(?:\s*[\(（][^\)）]*[\)）])?)", text)
     return match.group(1).strip() if match else "情報参照"
 
 def extract_tournament_results_from_html(html_content):
@@ -347,9 +347,7 @@ def extract_videos_from_html(html_content):
                 if is_final and "final" not in videos: videos["final"] = {"title": tag.get_text(strip=True), "url": normalized_url}
     return videos
 
-# ★ 各エントリー次ごとの参加条件（対象者）を抽出する関数
 def extract_entry_conditions(soup):
-    # フォールバック用の標準文言
     conditions = {
         1: "今回初めて「エリアトラウトのルアー大会」に参加する方",
         2: "「エリアトラウトのルアー大会」参加経験がある方で3位以内の入賞経験のない方",
@@ -367,7 +365,6 @@ def extract_entry_conditions(soup):
                 num_char_list = [str(i), ["１", "２", "３"][i-1], ["一", "二", "三"][i-1]]
                 if any(f"{nc}次" in text_lines[0] for nc in num_char_list):
                     cond_text = text_lines[1]
-                    # 日付部分「/ 8月18日...」や「は9月1日...」を自動で削り落とす
                     cond_text = re.sub(r"[/／].*", "", cond_text).strip()
                     cond_text = re.sub(r"は\s*(?:\d+月|\d+[/.-]\d+).*", "", cond_text).strip()
                     if cond_text:
@@ -414,7 +411,6 @@ def send_line_flex(header_title, round_num, location, event_date_str, entry_str,
     if extra_info:
         body_contents.append({"type": "separator"})
         
-        # ★ エントリー参加条件のレイアウト追加
         if "entry_condition" in extra_info:
             body_contents.append({
                 "type": "box",
@@ -591,7 +587,6 @@ def main():
             combined_lines = lines_p1 + lines_p2
             if not combined_text: continue
 
-            # 各エントリー次ごとの参加対象者条件を抽出
             conditions_dict = extract_entry_conditions(BeautifulSoup(combined_html, "html.parser"))
 
             is_cc = "/cc" in url
@@ -637,7 +632,6 @@ def main():
                 if entry_dates_str_list:
                     entry_str = "\n".join(entry_dates_str_list)
                     active_entry_dt = None
-                    # 最も近い未来（現在時刻より後、または24時間前まで）の日時をアクティブ日時としてセット
                     for idx, dt in enumerate(entry_dt_objs):
                         if dt + timedelta(days=1) > now:
                             active_entry_dt = dt
@@ -665,7 +659,6 @@ def main():
             cancel_keywords = ["見送る", "中止", "延期", "順延", "取りやめ", "開催を見送", "開催中止"]
             is_cancelled = 1 if any(kw in combined_text for kw in cancel_keywords) else 0
 
-            # 通知用付加情報のパッケージング（参加対象条件もここに追加）
             extra_info_dict = {"reception": reception_time, "fee": fee}
             if is_cc and active_entry_idx in conditions_dict:
                 extra_info_dict["entry_condition"] = f"[{active_entry_idx}次対象者]\n{conditions_dict[active_entry_idx]}"

@@ -594,8 +594,10 @@ def main():
             # 各エントリー次ごとの参加対象者条件を抽出
             conditions_dict = extract_entry_conditions(BeautifulSoup(combined_html, "html.parser"))
 
+            is_cc = "/cc" in url
             active_entry_idx = 1
-            if "/cc" in url:
+
+            if is_cc:
                 match_cc = re.search(r"cc(\d+)", url)
                 round_num = str(int(match_cc.group(1))) if match_cc else "不明"
                 
@@ -665,7 +667,7 @@ def main():
 
             # 通知用付加情報のパッケージング（参加対象条件もここに追加）
             extra_info_dict = {"reception": reception_time, "fee": fee}
-            if "/cc" in url and active_entry_idx in conditions_dict:
+            if is_cc and active_entry_idx in conditions_dict:
                 extra_info_dict["entry_condition"] = f"[{active_entry_idx}次対象者]\n{conditions_dict[active_entry_idx]}"
 
             results_data = extract_tournament_results_from_html(combined_html)
@@ -739,11 +741,13 @@ def main():
                         time_diff = entry_dt - now
                         if timedelta(0) < time_diff <= timedelta(minutes=15):
                             if not n_15m:
-                                notify_queue.append({"type": "info", "header": "🔥【15分前直前リマインド】", "round_num": round_num, "location": location, "event_date_str": event_date_str, "entry_str": entry_str, "url": url, "theme_color": theme_color, "extra_info": extra_info_dict})
+                                if not is_cc:
+                                    notify_queue.append({"type": "info", "header": "🔥【15分前直前リマインド】", "round_num": round_num, "location": location, "event_date_str": event_date_str, "entry_str": entry_str, "url": url, "theme_color": theme_color, "extra_info": extra_info_dict})
                                 db_updates.append(("UPDATE tournaments SET notified_15m=1, notified_1h=1, notified_1d=1 WHERE url=?", (url,)))
                         elif timedelta(0) < time_diff <= timedelta(hours=1):
                             if not n_1h:
-                                notify_queue.append({"type": "info", "header": "⏰【1時間前リマインド】", "round_num": round_num, "location": location, "event_date_str": event_date_str, "entry_str": entry_str, "url": url, "theme_color": theme_color, "extra_info": extra_info_dict})
+                                if not is_cc:
+                                    notify_queue.append({"type": "info", "header": "⏰【1時間前リマインド】", "round_num": round_num, "location": location, "event_date_str": event_date_str, "entry_str": entry_str, "url": url, "theme_color": theme_color, "extra_info": extra_info_dict})
                                 db_updates.append(("UPDATE tournaments SET notified_1h=1, notified_1d=1 WHERE url=?", (url,)))
                         elif timedelta(0) < time_diff <= timedelta(days=1):
                             if not n_1d:
@@ -759,7 +763,8 @@ def main():
                             db_updates.append(("UPDATE tournaments SET notified_just = 1 WHERE url = ?", (url,)))
                         elif target_10am <= now <= target_10am + timedelta(hours=12) and not n_after_24h:
                             if not is_night_mode:
-                                notify_queue.append({"type": "info", "header": "⚠️【エントリー忘れ防止】エントリーが開始されています！", "round_num": round_num, "location": location, "event_date_str": event_date_str, "entry_str": entry_str, "url": url, "theme_color": theme_color, "extra_info": extra_info_dict})
+                                if not is_cc:
+                                    notify_queue.append({"type": "info", "header": "⚠️【エントリー忘れ防止】エントリーが開始されています！", "round_num": round_num, "location": location, "event_date_str": event_date_str, "entry_str": entry_str, "url": url, "theme_color": theme_color, "extra_info": extra_info_dict})
                                 db_updates.append(("UPDATE tournaments SET notified_after_24h = 1 WHERE url = ?", (url,)))
 
                 if event_dt and is_cancelled == 0:

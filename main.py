@@ -159,13 +159,13 @@ def init_db():
 
     c.execute("CREATE TABLE IF NOT EXISTS system_config (key TEXT PRIMARY KEY, value TEXT)")
 
-    # ★新規追加：過去のテスト用CCデータを全削除して綺麗な状態で再通知させる
-    c.execute("SELECT value FROM system_config WHERE key = 'reset_cc_unknown_v2'")
+    # 過去のテスト用CCデータを全削除して綺麗な状態で再通知・リマインドフラグを正常化させる
+    c.execute("SELECT value FROM system_config WHERE key = 'reset_cc_unknown_v3'")
     if not c.fetchone():
         c.execute("DELETE FROM tournaments WHERE url LIKE '%/cc%'")
-        c.execute("INSERT INTO system_config (key, value) VALUES ('reset_cc_unknown_v2', '1')")
+        c.execute("INSERT INTO system_config (key, value) VALUES ('reset_cc_unknown_v3', '1')")
         conn.commit()
-        print("🔧 【DB更新】チャレンジカップの過去通知データをリセットしました。")
+        print("🔧 【DB更新】複数エントリー対応のため、チャレンジカップのデータをリセットしました。")
 
     return conn, is_initial_setup
 
@@ -347,7 +347,6 @@ def extract_videos_from_html(html_content):
                 if is_final and "final" not in videos: videos["final"] = {"title": tag.get_text(strip=True), "url": normalized_url}
     return videos
 
-# ★タイトルテキスト（h1等）も取得できるように修正
 def fetch_page_data(url):
     res = fetch_url(url)
     if res and res.status_code == 200:
@@ -368,7 +367,6 @@ def send_line_flex(header_title, round_num, location, event_date_str, entry_str,
     url = "https://api.line.me/v2/bot/message/push"
     headers = {"Content-Type": "application/json", "Authorization": f"Bearer {LINE_CHANNEL_ACCESS_TOKEN}"}
     
-    # ★チャレンジカップと通常大会で表記を美しく出し分ける
     is_cc = "/cc" in page_url
     title_main = f"第{round_num}回" if is_cc else f"第{round_num}戦"
     title_sub = location if is_cc else f"{location}大会"
@@ -378,7 +376,6 @@ def send_line_flex(header_title, round_num, location, event_date_str, entry_str,
         {"type": "text", "text": title_sub, "weight": "bold", "size": "md", "color": "#555555", "wrap": True},
         {"type": "separator"},
         {"type": "box", "layout": "vertical", "spacing": "xs", "contents": [{"type": "text", "text": "📅 大会開催日", "size": "xs", "color": "#888888"}, {"type": "text", "text": event_date_str, "size": "xl", "color": "#333333"}]},
-        # ★複数行のエントリー日時に対応するため、sizeをmdに変更しwrapをTrueに設定
         {"type": "box", "layout": "vertical", "spacing": "xs", "contents": [{"type": "text", "text": "⏰ エントリー開始日時", "size": "xs", "color": "#888888"}, {"type": "text", "text": entry_str, "size": "md", "color": "#E53935", "wrap": True}]}
     ]
     if extra_info:
@@ -518,7 +515,6 @@ def main():
             url_year = int(match_year.group(1)) if match_year else current_year
 
             time.sleep(0.5)
-            # ★戻り値を3つ受け取るように修正
             text_p1, html_p1, title_p1 = fetch_page_data(url)
             sub_url = url.rstrip("/") + "/2/"
             time.sleep(0.5)
@@ -529,36 +525,68 @@ def main():
             if not combined_text: continue
 
             # =========================================================
-            # ★ 大会名（location）とエントリー日時の取得ロジック（CC対応版）
+            # 大会名とエントリー日時の取得（チャレンジカップ・複数エントリー対応）
             # =========================================================
             if "/cc" in url:
                 match_cc = re.search(r"cc(\d+)", url)
                 round_num = str(int(match_cc.group(1))) if match_cc else "不明"
                 
-                # H1タグのタイトル（例: 第44回チャレンジカップinアングラーズベース赤城山）から「第〇〇回」を削って抽出
+                # 不要な装飾「【...】」や「は〇〇選手が優勝」を自動で削り落とす
                 loc_match = re.search(r"第\d+回(.*)", title_p1)
-                location = loc_match.group(1).strip() if loc_match else (title_p1 or "チャレンジカップ")
+                raw_loc = loc_match.group(1).strip() if loc_match else (title_p1 or "チャレンジカップ")
+                location = re.sub(r"【.*?】", "", raw_loc)
+                location = re.sub(r"は.*?(選手が優勝|が優勝).*", "", location).strip()
                 
-                # 複数回エントリー日時を抽出
-                entry_dates = []
-                first_entry_dt = None
+                # チャンク解析（周辺のテキストを塊で抜き出して日時を確実に拾う）
+                entry_dates_str_list = []
+                entry_dt_objs = []
                 for i in range(1, 4):
-                    # 「●1次エントリー開始期間：8月18日（火）20:00」のような文字列を検知
-                    pattern = re.search(rf"{i}次エントリー.*?(\d{{1,2}})月(\d{{1,2}})日.*?(\d{{1,2}}):(\d{{2}})", combined_text)
-                    if pattern:
-                        m, d, hh, mm = map(int, pattern.groups())
+                    num_char = {1: "[1１一]", 2: "[2２二]", 3: "[3３三]"}[i]
+                    # キーワード周辺のテキストを広く抽出
+                    chunks = re.findall(rf"(.{{0,40}}{num_char}次.*?エントリー.{{0,80}})", combined_text)
+                    found_dt = None
+                    # まずは日付と時間がセットになっているものを優先探索
+                    for chunk in chunks:
+                        dt_match = re.search(r"(\d{1,2})[月/.-](\d{1,2})[日]?[^\d]*?([0-2]?[0-9])[:時](\d{2})?", chunk)
+                        if dt_match:
+                            found_dt = (int(dt_match.group(1)), int(dt_match.group(2)), int(dt_match.group(3)), int(dt_match.group(4) or 0))
+                            break
+                    # 見つからなければ、日付だけ見つけて時間は標準（20:00）にフォールバック
+                    if not found_dt:
+                        for chunk in chunks:
+                            dt_match = re.search(r"(\d{1,2})[月/.-](\d{1,2})[日]?", chunk)
+                            if dt_match:
+                                time_match = re.search(r"([0-2]?[0-9])[:時](\d{2})?", chunk)
+                                hh = int(time_match.group(1)) if time_match else 20
+                                mm = int(time_match.group(2)) if (time_match and time_match.group(2)) else 0
+                                found_dt = (int(dt_match.group(1)), int(dt_match.group(2)), hh, mm)
+                                break
+
+                    if found_dt:
+                        m, d, hh, mm = found_dt
                         entry_year = url_year - 1 if m >= 11 else url_year
                         try:
                             dt = datetime(entry_year, m, d, hh, mm)
                             w = ["月", "火", "水", "木", "金", "土", "日"][dt.weekday()]
-                            entry_dates.append(f"{i}次: {m}/{d}({w}) {hh:02d}:{mm:02d}")
-                            if first_entry_dt is None or dt < first_entry_dt:
-                                first_entry_dt = dt
-                        except ValueError: pass
+                            entry_dates_str_list.append(f"{i}次: {m:02d}/{d:02d}({w}) {hh:02d}:{mm:02d}")
+                            entry_dt_objs.append(dt)
+                        except ValueError:
+                            pass
                 
-                if entry_dates:
-                    entry_str = "\n".join(entry_dates)
-                    entry_dt = first_entry_dt
+                # エントリー日時テキストの生成と、現在最も適切な「アクティブ日時」の計算
+                if entry_dates_str_list:
+                    entry_str = "\n".join(entry_dates_str_list)
+                    active_entry_dt = None
+                    for dt in entry_dt_objs:
+                        # 過ぎてから24時間以内のもの、または未来のものを採用
+                        if dt + timedelta(days=1) > now:
+                            active_entry_dt = dt
+                            break
+                    # 全て過去なら一番最後（3次）を採用
+                    if not active_entry_dt and entry_dt_objs:
+                        active_entry_dt = entry_dt_objs[-1]
+
+                    entry_dt = active_entry_dt
                 else:
                     entry_dt, entry_str = parse_entry_datetime(text_p2, url_year)
                     if not entry_dt: entry_dt, entry_str = parse_entry_datetime(text_p1, url_year)
@@ -568,7 +596,6 @@ def main():
                 location = match_title.group(2) if match_title else "対象会場"
                 entry_dt, entry_str = parse_entry_datetime(text_p2, url_year)
                 if not entry_dt: entry_dt, entry_str = parse_entry_datetime(text_p1, url_year)
-            # =========================================================
 
             event_dt, event_date_str = extract_event_date_info(combined_text, url_year)
             reception_time = extract_reception_time(combined_text)
@@ -604,6 +631,15 @@ def main():
             else:
                 (db_url, db_round, db_loc, db_event_date, db_event_dt_str, db_entry_dt_str, db_entry_str, db_reception, db_fee, db_text, db_cancelled, n_new, n_1d, n_1h, n_15m, n_event_1d, n_just, n_after_24h, n_result, n_video_int, n_video_fin, db_winner) = row
 
+                # =========================================================
+                # ★ フェーズ移行判定：アクティブなエントリー日時が変わったらフラグをリセット！
+                # =========================================================
+                current_entry_dt_str = entry_dt.strftime("%Y-%m-%d %H:%M:%S") if entry_dt else None
+                if db_entry_dt_str and current_entry_dt_str and db_entry_dt_str != current_entry_dt_str:
+                    n_1d, n_1h, n_15m, n_just, n_after_24h = 0, 0, 0, 0, 0
+                    db_updates.append(("UPDATE tournaments SET notified_1d=0, notified_1h=0, notified_15m=0, notified_just=0, notified_after_24h=0 WHERE url=?", (url,)))
+                    print(f"🔄 【フェーズ移行】エントリー日時が更新されたため通知フラグをリセット: 第{round_num}回/戦")
+
                 if winner_name and db_winner != winner_name:
                     c.execute("UPDATE tournaments SET winner_name = ? WHERE url = ?", (winner_name, url))
                 if "interview" in videos_data and n_video_int == 0:
@@ -635,7 +671,7 @@ def main():
                     if is_date_changed and not is_night_mode:
                         if not is_initial_setup and (db_event_date == "開催日未定" or db_entry_str == "エントリー日時未定"):
                             notify_queue.append({"type": "info", "header": "📢【大会情報更新】", "round_num": round_num, "location": location, "event_date_str": event_date_str, "entry_str": entry_str, "url": url, "theme_color": theme_color})
-                    c.execute("UPDATE tournaments SET round_num = ?, location = ?, event_date = ?, entry_datetime = ?, entry_str = ?, reception_time = ?, fee = ?, original_text = ? WHERE url = ?", (round_num, location, event_date_str, entry_dt.strftime("%Y-%m-%d %H:%M:%S") if entry_dt else None, entry_str, reception_time, fee, combined_text, url))
+                    c.execute("UPDATE tournaments SET round_num = ?, location = ?, event_date = ?, entry_datetime = ?, entry_str = ?, reception_time = ?, fee = ?, original_text = ? WHERE url = ?", (round_num, location, event_date_str, current_entry_dt_str, entry_str, reception_time, fee, combined_text, url))
 
                 if entry_dt and is_cancelled == 0:
                     if entry_dt > now:

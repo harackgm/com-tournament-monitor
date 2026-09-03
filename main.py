@@ -303,7 +303,7 @@ def get_winner_congratulations_message(cursor, winner_name, current_round_num):
     is_consecutive = False
 
     try:
-        current_r = int(current_round_num)
+        current_r = int(re.sub(r"\D", "", str(current_round_num))) if re.sub(r"\D", "", str(current_round_num)) else 0
         prev_r = current_r - 1
     except ValueError:
         current_r, prev_r = None, None
@@ -571,9 +571,26 @@ def main():
             combined_html = html_p2 + html_p1
             if not combined_text: continue
 
-            match_title = re.search(r"第(\d+)戦([^\s大会を]+)", combined_text)
-            round_num = match_title.group(1) if match_title else "不明"
-            location = match_title.group(2) if match_title else "対象会場"
+            # =========================================================
+            # ★ 今回の修正箇所: チャレンジカップ（CC）と通常大会の抽出ロジック分岐
+            # =========================================================
+            if "/cc" in url:
+                # チャレンジカップ専用ロジック (例: cc044 -> 44)
+                match_cc = re.search(r"cc(\d+)", url)
+                round_num = str(int(match_cc.group(1))) if match_cc else "不明"
+                
+                # チャレンジカップの会場名をテキストから抽出（例: チャレンジカップ in サンクチュアリ）
+                match_loc = re.search(r"チャレンジカップ(?:in|[\s ]+)([^\s大会を]+)", combined_text)
+                if match_loc:
+                    location = f"CC {match_loc.group(1)}"
+                else:
+                    location = "チャレンジカップ"
+            else:
+                # 通常大会ロジック
+                match_title = re.search(r"第(\d+)戦([^\s大会を]+)", combined_text)
+                round_num = match_title.group(1) if match_title else "不明"
+                location = match_title.group(2) if match_title else "対象会場"
+            # =========================================================
 
             event_dt, event_date_str = extract_event_date_info(combined_text, url_year)
             entry_dt, entry_str = parse_entry_datetime(text_p2, url_year)

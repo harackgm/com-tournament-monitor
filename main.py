@@ -156,9 +156,8 @@ def init_db():
         )
     """)
     conn.commit()
-
     c.execute("CREATE TABLE IF NOT EXISTS system_config (key TEXT PRIMARY KEY, value TEXT)")
-
+    
     # 抽出ロジック微調整(v6)のためキー更新のみ（DB削除は行わない安全更新）
     c.execute("SELECT value FROM system_config WHERE key = 'system_update_v6'")
     if not c.fetchone():
@@ -224,12 +223,10 @@ def parse_entry_datetime(text, year):
     return None, "エントリー日時未定"
 
 def extract_reception_time(text):
-    # 受付：6:00～6:30 や 6:00より など、表記ゆれに柔軟に対応
     match = re.search(r"【?受\s*付】?[：:\s]*([0-2]?[0-9][:：][0-5][0-9](?:\s*[\~～\-]\s*[0-2]?[0-9][:：][0-5][0-9])?|[^。、\n]{2,10}より)", text)
     return match.group(1).strip() if match else "情報参照"
 
 def extract_fee(text):
-    # 参加費用：8,000円 や 参加費 6,000円（半日券込）など、ゆらぎに対応
     match = re.search(r"【?(?:参加費用|参加費|費用)】?[：:\s]*([^。、\n]{2,20}円(?:\s*[\(（][^\)）]*[\)）])?)", text)
     return match.group(1).strip() if match else "情報参照"
 
@@ -464,20 +461,31 @@ def send_result_line_flex(header_title, round_num, location, results, page_url, 
         rank = res['rank']
         name = res['name']
         img_url = res.get('image_url')
-        bg_color, icon_emoji = theme_color, "🏅"
+        bg_color = theme_color
         
         is_winner = False
         if "優勝" in rank or "1" in rank or "１" in rank: 
-            bg_color, icon_emoji = "#D4AF37", "🏆"
+            bg_color = "#D4AF37"
+            formatted_name = f"🏆 優勝！{name}"
+            header_text = "優勝"
             is_winner = True
-        elif "2" in rank or "２" in rank: bg_color, icon_emoji = "#C0C0C0", "🥈"
-        elif "3" in rank or "三" in rank: bg_color, icon_emoji = "#CD7F32", "🥉"
+        elif "2" in rank or "２" in rank or "準" in rank: 
+            bg_color = "#C0C0C0"
+            formatted_name = f"🥈 準優勝・{name}"
+            header_text = "第２位"
+        elif "3" in rank or "三" in rank: 
+            bg_color = "#CD7F32"
+            formatted_name = f"🥉 準々優勝・{name}"
+            header_text = "第３位"
+        else:
+            formatted_name = f"🏅 {rank}・{name}"
+            header_text = rank
 
         body_contents = [
-            {"type": "text", "text": icon_emoji, "size": "4xl", "margin": "md"},
-            {"type": "text", "text": name, "weight": "bold", "size": "xl", "margin": "md", "color": "#333333", "wrap": True},
+            {"type": "text", "text": formatted_name, "weight": "bold", "size": "xl", "margin": "md", "color": "#333333", "wrap": True},
             {"type": "text", "text": title_text_str, "size": "xs", "color": "#888888", "margin": "sm", "wrap": True}
         ]
+        
         if is_winner and res.get('congrat_msg'):
             body_contents.append({"type": "separator", "margin": "md"})
             body_contents.append({"type": "text", "text": res['congrat_msg'], "size": "xs", "color": "#D32F2F", "weight": "bold", "margin": "md", "wrap": True})
@@ -487,14 +495,14 @@ def send_result_line_flex(header_title, round_num, location, results, page_url, 
 
         bubble = {
             "type": "bubble", 
-            "header": {"type": "box", "layout": "vertical", "backgroundColor": bg_color, "contents": [{"type": "text", "text": f"{rank}", "color": "#FFFFFF", "weight": "bold", "size": "md"}]}, 
+            "header": {"type": "box", "layout": "vertical", "backgroundColor": bg_color, "contents": [{"type": "text", "text": header_text, "color": "#FFFFFF", "weight": "bold", "size": "md"}]}, 
             "body": {"type": "box", "layout": "vertical", "alignItems": "center", "contents": body_contents}, 
             "footer": {"type": "box", "layout": "vertical", "contents": [{"type": "button", "action": {"type": "uri", "label": "🔗 結果詳細を見る", "uri": target_url}, "style": "primary", "color": bg_color}]}
         }
         if img_url:
             bubble["hero"] = {"type": "image", "url": img_url, "size": "full", "aspectRatio": "3:4", "aspectMode": "fit", "backgroundColor": "#FFFFFF"}
-            bubble["body"]["contents"].pop(0)
         bubbles.append(bubble)
+    
     try: requests.post(url, headers=headers, json={"to": LINE_USER_ID, "messages": [{"type": "flex", "altText": f"【大会結果】{title_text_str}", "contents": {"type": "carousel", "contents": bubbles}}]}, timeout=TIMEOUT_SEC)
     except Exception: pass
 

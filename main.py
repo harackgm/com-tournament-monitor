@@ -72,23 +72,39 @@ def get_weather_advice(location_name):
             lat, lon = coords
             break
     try:
-        api_url = f"https://api.open-meteo.com/v1/forecast?latitude={lat}&longitude={lon}&daily=weathercode,temperature_2m_max,precipitation_sum&timezone=Asia%2FTokyo"
+        # 最高/最低気温、降水量、最大風速を取得
+        api_url = f"https://api.open-meteo.com/v1/forecast?latitude={lat}&longitude={lon}&daily=weathercode,temperature_2m_max,temperature_2m_min,precipitation_sum,windspeed_10m_max&timezone=Asia%2FTokyo"
         res = requests.get(api_url, timeout=5)
         if res.status_code == 200:
             data = res.json()
             max_temp = data["daily"]["temperature_2m_max"][1]
+            min_temp = data["daily"]["temperature_2m_min"][1]
             precip = data["daily"]["precipitation_sum"][1]
+            wind = data["daily"]["windspeed_10m_max"][1]
             w_code = data["daily"]["weathercode"][1]
 
-            advice = ""
+            # 基本の天気テキスト
             if w_code in [51, 53, 55, 61, 63, 65, 80, 81, 82, 95, 96, 99] or (precip > 1.0):
-                advice = "🌧 雨の予報です。レインウェアと防水対策をお忘れなく！"
-            elif max_temp >= 30:
-                advice = f"☀️ 最高気温{int(max_temp)}℃の猛暑予報です。熱中症対策を！"
-            elif max_temp <= 10:
-                advice = f"❄️ 最高気温{int(max_temp)}℃の冷え込み予報です。防寒対策を！"
+                w_text = f"🌧 雨予報 (降水量: {precip}mm)"
+            elif w_code in [3, 45, 48]:
+                w_text = "☁️ 曇り予報"
             else:
-                advice = f"🌤 予想最高気温は{int(max_temp)}℃です。絶好のコンディション！"
+                w_text = "🌤 晴れ/概ね晴れ"
+                
+            advice = f"{w_text}\n🌡 気温: 最高{int(max_temp)}℃ / 最低{int(min_temp)}℃\n🌬 最大風速: {wind}m/s\n\n"
+            
+            # コンディションに応じたアドバイス
+            if precip > 1.0:
+                advice += "レインウェアと防水対策をお忘れなく！"
+            elif max_temp >= 30:
+                advice += "猛暑が予想されます。熱中症対策を万全に！"
+            elif max_temp <= 10 or min_temp <= 5:
+                advice += "冷え込みが予想されます。防寒・防風対策をしっかりと！"
+            elif wind >= 5.0:
+                advice += "風が少し強そうです。キャスト時のラインメンディングに注意しましょう！"
+            else:
+                advice += "絶好の釣り日和になりそうです！"
+                
             return f"{advice}\n🔥 日頃の練習の成果を発揮し、優勝を目指してください！"
     except Exception:
         pass
@@ -158,7 +174,6 @@ def init_db():
     conn.commit()
     c.execute("CREATE TABLE IF NOT EXISTS system_config (key TEXT PRIMARY KEY, value TEXT)")
     
-    # 抽出ロジック微調整(v6)のためキー更新のみ（DB削除は行わない安全更新）
     c.execute("SELECT value FROM system_config WHERE key = 'system_update_v6'")
     if not c.fetchone():
         c.execute("INSERT INTO system_config (key, value) VALUES ('system_update_v6', '1')")
@@ -397,50 +412,78 @@ def send_line_flex(header_title, round_num, location, event_date_str, entry_str,
     is_cc = "/cc" in page_url
     title_main = f"第{round_num}回" if is_cc else f"第{round_num}戦"
     title_sub = location if is_cc else f"{location}大会"
+    
+    # 開催前日（直前案内）かどうかの判定
+    is_day_before_notice = "明日大会開催" in header_title
 
     body_contents = [
         {"type": "text", "text": title_main, "weight": "bold", "size": "xl", "color": "#333333"},
         {"type": "text", "text": title_sub, "weight": "bold", "size": "md", "color": "#555555", "wrap": True},
-        {"type": "separator"},
-        {"type": "box", "layout": "vertical", "spacing": "xs", "contents": [{"type": "text", "text": "📅 大会開催日", "size": "xs", "color": "#888888"}, {"type": "text", "text": event_date_str, "size": "xl", "color": "#333333"}]},
-        {"type": "box", "layout": "vertical", "spacing": "xs", "contents": [{"type": "text", "text": "⏰ エントリー開始日時", "size": "xs", "color": "#888888"}, {"type": "text", "text": entry_str, "size": "md", "color": "#E53935", "wrap": True}]}
+        {"type": "separator", "margin": "md"}
     ]
-    if extra_info:
-        body_contents.append({"type": "separator"})
-        
-        if "entry_condition" in extra_info:
-            body_contents.append({
-                "type": "box",
-                "layout": "vertical",
-                "spacing": "xs",
-                "margin": "md",
-                "contents": [
-                    {"type": "text", "text": "✅ エントリー参加条件", "size": "xs", "color": "#888888", "weight": "bold"},
-                    {"type": "text", "text": extra_info["entry_condition"], "size": "sm", "color": "#D32F2F", "wrap": True, "weight": "bold"}
-                ]
-            })
-            body_contents.append({"type": "separator", "margin": "md"})
-
+    
+    if is_day_before_notice:
+        # ■ 前日案内専用レイアウト
         body_contents.append({
-            "type": "box", 
-            "layout": "vertical", 
-            "spacing": "xs",
-            "margin": "md", 
+            "type": "box", "layout": "vertical", "spacing": "sm", "margin": "md",
             "contents": [
-                {"type": "text", "text": f"📋 受付時間: {extra_info.get('reception', '情報参照')}", "size": "sm", "color": "#555555"}, 
-                {"type": "text", "text": f"💰 参加費用: {extra_info.get('fee', '情報参照')}", "size": "sm", "color": "#555555"}
+                {"type": "text", "text": "📅 大会開催日", "size": "sm", "color": "#888888", "weight": "bold"},
+                {"type": "text", "text": event_date_str, "size": "xl", "color": "#333333", "weight": "bold"}
             ]
         })
-        if "weather_advice" in extra_info:
-            body_contents.append({"type": "separator", "margin": "md"})
+        body_contents.append({"type": "separator", "margin": "md"})
+        
+        if extra_info:
             body_contents.append({
                 "type": "box", 
                 "layout": "vertical", 
-                "spacing": "xs", 
-                "margin": "md",
+                "spacing": "sm",
+                "margin": "md", 
                 "contents": [
-                    {"type": "text", "text": "🌤 明日の天候・応援", "size": "xs", "color": "#888888"}, 
-                    {"type": "text", "text": extra_info["weather_advice"], "size": "sm", "color": "#333333", "wrap": True}
+                    {"type": "text", "text": f"📋 受付時間: {extra_info.get('reception', '情報参照')}", "size": "md", "color": "#D32F2F", "weight": "bold"}, 
+                    {"type": "text", "text": f"💰 参加費用: {extra_info.get('fee', '情報参照')}", "size": "md", "color": "#D32F2F", "weight": "bold"}
+                ]
+            })
+            if "weather_advice" in extra_info:
+                body_contents.append({"type": "separator", "margin": "md"})
+                body_contents.append({
+                    "type": "box", 
+                    "layout": "vertical", 
+                    "spacing": "sm", 
+                    "margin": "md",
+                    "contents": [
+                        {"type": "text", "text": "🌤 明日の天候・コンディション", "size": "sm", "color": "#888888", "weight": "bold"}, 
+                        {"type": "text", "text": extra_info["weather_advice"], "size": "md", "color": "#333333", "wrap": True, "weight": "bold"}
+                    ]
+                })
+    else:
+        # ■ 通常のエントリー関連・お知らせレイアウト
+        body_contents.append({"type": "box", "layout": "vertical", "spacing": "xs", "margin": "md", "contents": [{"type": "text", "text": "📅 大会開催日", "size": "xs", "color": "#888888"}, {"type": "text", "text": event_date_str, "size": "xl", "color": "#333333"}]})
+        body_contents.append({"type": "box", "layout": "vertical", "spacing": "xs", "contents": [{"type": "text", "text": "⏰ エントリー開始日時", "size": "xs", "color": "#888888"}, {"type": "text", "text": entry_str, "size": "md", "color": "#E53935", "wrap": True}]})
+        
+        if extra_info:
+            body_contents.append({"type": "separator", "margin": "md"})
+            if "entry_condition" in extra_info:
+                body_contents.append({
+                    "type": "box",
+                    "layout": "vertical",
+                    "spacing": "xs",
+                    "margin": "md",
+                    "contents": [
+                        {"type": "text", "text": "✅ エントリー参加条件", "size": "xs", "color": "#888888", "weight": "bold"},
+                        {"type": "text", "text": extra_info["entry_condition"], "size": "sm", "color": "#D32F2F", "wrap": True, "weight": "bold"}
+                    ]
+                })
+                body_contents.append({"type": "separator", "margin": "md"})
+
+            body_contents.append({
+                "type": "box", 
+                "layout": "vertical", 
+                "spacing": "xs",
+                "margin": "md", 
+                "contents": [
+                    {"type": "text", "text": f"📋 受付時間: {extra_info.get('reception', '情報参照')}", "size": "sm", "color": "#555555"}, 
+                    {"type": "text", "text": f"💰 参加費用: {extra_info.get('fee', '情報参照')}", "size": "sm", "color": "#555555"}
                 ]
             })
 

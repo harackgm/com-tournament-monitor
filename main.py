@@ -65,6 +65,23 @@ def fetch_url(url, retries=3):
             print(f"💡 リトライ待ち ({i+1}/{retries}回目, {wait_time}秒後): {url}")
             time.sleep(wait_time)
 
+# YouTube動画が現在再生可能（公開済み）かを判定する関数
+def is_youtube_video_available(youtube_url):
+    if not youtube_url: return False
+    res = fetch_url(youtube_url)
+    if not res or res.status_code != 200:
+        return False
+    
+    html = res.text
+    # プレミア公開前や未公開の場合に含まれるキーワードをチェック
+    upcoming_keywords = ["isUpcoming", "公開予定", "ライブ配信まで", "プレミア公開"]
+    for kw in upcoming_keywords:
+        if kw in html:
+            print(f"⏳ YouTube動画はプレミア公開前（未再生）です: {youtube_url}")
+            return False
+            
+    return True
+
 def get_weather_advice(location_name):
     lat, lon = 36.5, 139.8
     for name, coords in LOCATION_COORDS.items():
@@ -778,13 +795,15 @@ def main():
                 if winner_name and db_winner != winner_name:
                     c.execute("UPDATE tournaments SET winner_name = ? WHERE url = ?", (winner_name, url))
                 if "interview" in videos_data and n_video_int == 0:
-                    if not is_night_mode:
-                        notify_queue.append({"type": "video", "header": "🎤【優勝者インタビュー公開】", "round_num": round_num, "location": location, "video_data": videos_data["interview"], "url": url, "theme_color": theme_color, "main_image_url": main_image_url})
-                        db_updates.append(("UPDATE tournaments SET notified_video_interview = 1 WHERE url = ?", (url,)))
+                    if is_youtube_video_available(videos_data["interview"]["url"]):
+                        if not is_night_mode:
+                            notify_queue.append({"type": "video", "header": "🎤【優勝者インタビュー公開】", "round_num": round_num, "location": location, "video_data": videos_data["interview"], "url": url, "theme_color": theme_color, "main_image_url": main_image_url})
+                            db_updates.append(("UPDATE tournaments SET notified_video_interview = 1 WHERE url = ?", (url,)))
                 if "final" in videos_data and n_video_fin == 0:
-                    if not is_night_mode:
-                        notify_queue.append({"type": "video", "header": "🎥【決勝戦 動画公開】", "round_num": round_num, "location": location, "video_data": videos_data["final"], "url": url, "theme_color": theme_color, "main_image_url": main_image_url})
-                        db_updates.append(("UPDATE tournaments SET notified_video_final = 1 WHERE url = ?", (url,)))
+                    if is_youtube_video_available(videos_data["final"]["url"]):
+                        if not is_night_mode:
+                            notify_queue.append({"type": "video", "header": "🎥【決勝戦 動画公開】", "round_num": round_num, "location": location, "video_data": videos_data["final"], "url": url, "theme_color": theme_color, "main_image_url": main_image_url})
+                            db_updates.append(("UPDATE tournaments SET notified_video_final = 1 WHERE url = ?", (url,)))
                 if results_data and n_result == 0:
                     days_since_event = (now - event_dt).days if event_dt else 999
                     if days_since_event > 14: db_updates.append(("UPDATE tournaments SET notified_result = 1 WHERE url = ?", (url,)))

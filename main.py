@@ -12,7 +12,7 @@ import xml.etree.ElementTree as ET
 # 安全制御・環境変数設定
 # ==========================================
 LINE_CHANNEL_ACCESS_TOKEN = os.environ.get("LINE_CHANNEL_ACCESS_TOKEN", "")
-LINE_USER_ID = os.environ.get("LINE_USER_ID", "")
+# ※本番用では LINE_USER_ID は使用しません
 
 DB_PATH = "tournaments.db"
 MAX_NOTIFY_LIMIT = 5  # 大量通知ストッパー
@@ -321,11 +321,10 @@ def extract_tournament_results_from_html(html_content):
                 nxt = nxt.find_next_sibling()
                 count += 1
                 
-            # jump_target は記号を除外した名前をそのまま指定してジャンプ精度を上げる
             if not any(r['name'] == name for r in results):
                 results.append({"rank": rank, "name": name, "image_url": img_url, "jump_target": name})
                 
-    # 🍜 ラーメン賞等の抽出
+    # 🍜 ラーメン賞の抽出
     for li in soup.find_all('li'):
         p_tag = li.find('p')
         img_tag = li.find('img')
@@ -457,10 +456,10 @@ def fetch_page_data(url):
 # ==========================================
 # LINE Push Message (Flex Message カルーセル)
 # ==========================================
-# ★ テスト用：個別送信（push）仕様 ★
+# ★ 本番用：一斉送信（broadcast）仕様 ★
 def send_line_flex(header_title, round_num, location, event_date_str, entry_str, page_url, theme_color, extra_info=None):
-    if not LINE_CHANNEL_ACCESS_TOKEN or not LINE_USER_ID: return
-    url = "https://api.line.me/v2/bot/message/push"
+    if not LINE_CHANNEL_ACCESS_TOKEN: return
+    url = "https://api.line.me/v2/bot/message/broadcast"
     headers = {"Content-Type": "application/json", "Authorization": f"Bearer {LINE_CHANNEL_ACCESS_TOKEN}"}
     
     is_cc = "/cc" in page_url
@@ -538,13 +537,13 @@ def send_line_flex(header_title, round_num, location, event_date_str, entry_str,
                 ]
             })
 
-    flex_payload = {"to": LINE_USER_ID, "messages": [{"type": "flex", "altText": f"【{header_title}】{title_main} {title_sub}", "contents": {"type": "carousel", "contents": [{"type": "bubble", "header": {"type": "box", "layout": "vertical", "backgroundColor": theme_color, "contents": [{"type": "text", "text": f"🎣 {header_title}", "color": "#FFFFFF", "weight": "bold", "size": "xs"}]}, "body": {"type": "box", "layout": "vertical", "spacing": "md", "contents": body_contents}, "footer": {"type": "box", "layout": "vertical", "contents": [{"type": "button", "action": {"type": "uri", "label": "🔗 詳細・エントリー", "uri": page_url}, "style": "primary", "color": theme_color}]}}]}}]}
+    flex_payload = {"messages": [{"type": "flex", "altText": f"【{header_title}】{title_main} {title_sub}", "contents": {"type": "carousel", "contents": [{"type": "bubble", "header": {"type": "box", "layout": "vertical", "backgroundColor": theme_color, "contents": [{"type": "text", "text": f"🎣 {header_title}", "color": "#FFFFFF", "weight": "bold", "size": "xs"}]}, "body": {"type": "box", "layout": "vertical", "spacing": "md", "contents": body_contents}, "footer": {"type": "box", "layout": "vertical", "contents": [{"type": "button", "action": {"type": "uri", "label": "🔗 詳細・エントリー", "uri": page_url}, "style": "primary", "color": theme_color}]}}]}}]}
     try: requests.post(url, headers=headers, json=flex_payload, timeout=TIMEOUT_SEC)
     except Exception: pass
 
 def send_result_line_flex(header_title, round_num, location, results, page_url, theme_color):
-    if not LINE_CHANNEL_ACCESS_TOKEN or not LINE_USER_ID: return
-    url = "https://api.line.me/v2/bot/message/push"
+    if not LINE_CHANNEL_ACCESS_TOKEN: return
+    url = "https://api.line.me/v2/bot/message/broadcast"
     headers = {"Content-Type": "application/json", "Authorization": f"Bearer {LINE_CHANNEL_ACCESS_TOKEN}"}
     
     is_cc = "/cc" in page_url
@@ -588,7 +587,6 @@ def send_result_line_flex(header_title, round_num, location, results, page_url, 
             body_contents.append({"type": "separator", "margin": "md"})
             body_contents.append({"type": "text", "text": res['congrat_msg'], "size": "xs", "color": "#D32F2F", "weight": "bold", "margin": "md", "wrap": True})
 
-        # ジャンプ先を記号のない純粋な名前（または賞名）に指定
         jump_target = res.get('jump_target', name or rank)
         target_url = f"{page_url}#:~:text={urllib.parse.quote(jump_target)}"
 
@@ -603,12 +601,12 @@ def send_result_line_flex(header_title, round_num, location, results, page_url, 
         bubbles.append(bubble)
     
     if bubbles:
-        try: requests.post(url, headers=headers, json={"to": LINE_USER_ID, "messages": [{"type": "flex", "altText": f"【大会結果】{title_text_str}", "contents": {"type": "carousel", "contents": bubbles}}]}, timeout=TIMEOUT_SEC)
+        try: requests.post(url, headers=headers, json={"messages": [{"type": "flex", "altText": f"【大会結果】{title_text_str}", "contents": {"type": "carousel", "contents": bubbles}}]}, timeout=TIMEOUT_SEC)
         except Exception: pass
 
 def send_video_line_flex(header_title, round_num, location, video_data, page_url, theme_color, main_image_url=None):
-    if not LINE_CHANNEL_ACCESS_TOKEN or not LINE_USER_ID: return
-    url = "https://api.line.me/v2/bot/message/push"
+    if not LINE_CHANNEL_ACCESS_TOKEN: return
+    url = "https://api.line.me/v2/bot/message/broadcast"
     headers = {"Content-Type": "application/json", "Authorization": f"Bearer {LINE_CHANNEL_ACCESS_TOKEN}"}
     
     is_cc = "/cc" in page_url
@@ -643,18 +641,17 @@ def send_video_line_flex(header_title, round_num, location, video_data, page_url
         }
 
     flex_payload = {
-        "to": LINE_USER_ID,
         "messages": [{"type": "flex", "altText": f"{header_title} {title_main} {title_sub}", "contents": bubble}]
     }
     try: requests.post(url, headers=headers, json=flex_payload, timeout=TIMEOUT_SEC)
     except Exception: pass
 
 # ==========================================
-# メイン監視処理（一般公開・テスト運用モード）
+# メイン監視処理（一般公開・本番運用モード）
 # ==========================================
 def main():
     now = get_jst_now()
-    print(f"[{now.strftime('%Y-%m-%d %H:%M:%S')}] 全自動監視処理（テスト運用モード）を開始します。")
+    print(f"[{now.strftime('%Y-%m-%d %H:%M:%S')}] 全自動監視処理（本番運用モード）を開始します。")
     
     conn, is_initial_setup = init_db()
     c = conn.cursor()
@@ -846,22 +843,18 @@ def main():
                 
                 # ★二段階結果通知ロジック（STEP1: 速報 ➔ STEP2: 写真追加・48h・動画連動）
                 if results_data:
-                    # 本戦の抽出リスト（同率の複数人も全て含む）
                     main_results = [r for r in results_data if r['rank'] in ['優勝', '２位', '３位']]
                     
-                    # STEP 1: 初回検知時に「速報」としてすぐ一度送信
                     if n_result == 0:
                         db_result_detected_at = now.strftime("%Y-%m-%d %H:%M:%S")
                         db_updates.append(("UPDATE tournaments SET result_detected_at = ?, notified_result = 1 WHERE url = ?", (db_result_detected_at, url)))
                         
-                        # STEP 1の時点でもラーメン賞は「写真がある場合のみ」載せる
                         results_to_send_step1 = [r for r in results_data if r['rank'] != "ラーメン賞" or r.get('image_url')]
                         
                         if not is_night_mode:
                             notify_queue.append({"type": "result", "header": "📣【大会結果 速報！】", "round_num": round_num, "location": location, "results": results_to_send_step1, "url": url, "theme_color": theme_color})
                             print(f"🚀 【送信キュー追加】大会結果速報: 第{round_num}回/戦 {location}")
                     
-                    # STEP 2: 抽出された全員の写真が揃うまで最大48時間待機
                     elif n_result == 1:
                         if not db_result_detected_at:
                             db_result_detected_at = now.strftime("%Y-%m-%d %H:%M:%S")
@@ -870,7 +863,6 @@ def main():
                         detected_dt = datetime.strptime(db_result_detected_at, "%Y-%m-%d %H:%M:%S")
                         hours_since_detected = (now - detected_dt).total_seconds() / 3600
                         
-                        # 抽出された本戦の全対象者（同率含む全員）に画像が紐付いているかチェック
                         is_images_complete = all(r.get('image_url') for r in main_results)
                         
                         should_notify_photo = False
@@ -882,13 +874,11 @@ def main():
                             should_notify_photo = True
 
                         if should_notify_photo:
-                            # 欠けている画像がある場合は「表彰台」画像で埋める
                             podium_img_url = extract_podium_image(combined_html)
                             for r in results_data:
                                 if not r.get('image_url') and podium_img_url and r['rank'] in ['優勝', '２位', '３位']:
                                     r['image_url'] = podium_img_url
 
-                            # ラーメン賞は写真がない場合はリストから除外
                             final_results_to_send = [r for r in results_data if r['rank'] != "ラーメン賞" or r.get('image_url')]
 
                             if not is_night_mode:

@@ -73,7 +73,6 @@ def is_youtube_video_available(youtube_url):
         return False
     
     html = res.text
-    # プレミア公開前や未公開の場合に含まれるキーワードをチェック
     upcoming_keywords = ["isUpcoming", "公開予定", "ライブ配信まで", "プレミア公開"]
     for kw in upcoming_keywords:
         if kw in html:
@@ -222,7 +221,6 @@ def get_theme_color(location_name):
 # テキスト解析ヘルパー関数群
 # ==========================================
 def extract_main_image(html_content):
-    """本文中の最初の画像（集合写真など）を抽出する"""
     if not html_content: return None
     soup = BeautifulSoup(html_content, "html.parser")
     content_area = soup.find("div", class_="entry-content")
@@ -233,6 +231,21 @@ def extract_main_image(html_content):
             if src.startswith('/'):
                 src = "https://www.kanritsuriba.com" + src
             return src
+    return None
+
+def extract_podium_image(html_content):
+    """結果ページから「表彰台」の画像URLを抽出する"""
+    if not html_content: return None
+    soup = BeautifulSoup(html_content, "html.parser")
+    for li in soup.find_all('li'):
+        p_tag = li.find('p')
+        img_tag = li.find('img')
+        if p_tag and img_tag and img_tag.get('src'):
+            text = p_tag.get_text(strip=True)
+            if "表彰台" in text:
+                src = img_tag.get('src')
+                if src.startswith('/'): src = "https://www.kanritsuriba.com" + src
+                return src
     return None
 
 def extract_event_date_info(text, year):
@@ -316,6 +329,21 @@ def extract_tournament_results_from_html(html_content):
                 
             if not any(r['name'] == name for r in results):
                 results.append({"rank": rank, "name": name, "image_url": img_url, "jump_target": jump_target})
+                
+    # 🍜 ラーメン賞等の抽出（li要素内の画像とテキストから）
+    for li in soup.find_all('li'):
+        p_tag = li.find('p')
+        img_tag = li.find('img')
+        if p_tag and img_tag and img_tag.get('src'):
+            text = p_tag.get_text(strip=True)
+            if "ラーメン賞" in text or "４位" in text or "4位" in text:
+                src = img_tag.get('src')
+                if src.startswith('/'): src = "https://www.kanritsuriba.com" + src
+                name = text.replace("ラーメン賞", "").replace("：", "").replace(":", "").strip()
+                if not name: name = "見事獲得！"
+                if not any(r['rank'] == "ラーメン賞" for r in results):
+                    results.append({"rank": "ラーメン賞", "name": name, "image_url": src, "jump_target": text[:20]})
+                    
     return results
 
 def get_winner_congratulations_message(cursor, winner_name, current_round_num):
@@ -549,6 +577,10 @@ def send_result_line_flex(header_title, round_num, location, results, page_url, 
             bg_color = "#CD7F32"
             formatted_name = f"🥉 準々優勝・{name}"
             header_text = "第３位"
+        elif "ラーメン" in rank or "4" in rank or "４" in rank: 
+            bg_color = theme_color
+            formatted_name = f"🍜 ラーメン賞！{name}"
+            header_text = "ラーメン賞"
         else:
             formatted_name = f"🏅 {rank}・{name}"
             header_text = rank
@@ -816,7 +848,7 @@ def main():
                             notify_queue.append({"type": "video", "header": "🎤【優勝者インタビュー公開】", "round_num": round_num, "location": location, "video_data": videos_data["interview"], "url": url, "theme_color": theme_color, "main_image_url": main_image_url})
                             db_updates.append(("UPDATE tournaments SET notified_video_interview = 1 WHERE url = ?", (url,)))
                 
-                # ★追加・修正：大会結果の写真掲載待ちロジック（48時間＆動画公開連動）
+                # ★追加・修正：大会結果の写真掲載待ち＆代替画像適用ロジック
                 if results_data and n_result == 0:
                     # 最初に結果テキストを検知した時間を記録
                     if not db_result_detected_at:
@@ -826,8 +858,8 @@ def main():
                     detected_dt = datetime.strptime(db_result_detected_at, "%Y-%m-%d %H:%M:%S")
                     hours_since_detected = (now - detected_dt).total_seconds() / 3600
                     
-                    # 取得できた結果のうち、画像URLが紐付いている枚数をカウント（目標は優勝・2位・3位の最低3枚）
-                    image_count = sum(1 for r in results_data if r.get('image_url'))
+                    # 取得できた結果のうち、上位3位(優勝、2位、3位)の画像が揃っているかカウント
+                    image_count = sum(1 for r in results_data if r.get('image_url') and r['rank'] in ['優勝', '２位', '３位'])
                     is_images_complete = (image_count >= 3)
                     
                     # 待機を打ち切って通知を出すべきか判定
@@ -841,6 +873,12 @@ def main():
                         should_notify_result = True
 
                     if should_notify_result:
+                        # 欠けている画像がある場合は「表彰台」の画像を取得して代用する
+                        podium_img_url = extract_podium_image(combined_html)
+                        for r in results_data:
+                            if not r.get('image_url') and podium_img_url:
+                                r['image_url'] = podium_img_url
+
                         if not is_night_mode:
                             notify_queue.append({"type": "result", "header": "🎊【大会結果発表！】", "round_num": round_num, "location": location, "results": results_data, "url": url, "theme_color": theme_color})
                             db_updates.append(("UPDATE tournaments SET notified_result = 1 WHERE url = ?", (url,)))

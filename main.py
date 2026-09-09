@@ -15,7 +15,7 @@ LINE_CHANNEL_ACCESS_TOKEN = os.environ.get("LINE_CHANNEL_ACCESS_TOKEN", "")
 LINE_USER_ID = os.environ.get("LINE_USER_ID", "")
 
 DB_PATH = "tournaments.db"
-MAX_NOTIFY_LIMIT = 5  # 大量通知ストッパー（裏側の安全装置：5件以上はLINE非送信でDB更新のみ）
+MAX_NOTIFY_LIMIT = 5  # 大量通知ストッパー
 TIMEOUT_SEC = 10  # 通信タイムアウト時間(10秒)
 
 # --- 大会前日リマインドの通知時間帯指定 ---
@@ -23,7 +23,6 @@ EVENT_1D_HOUR_START = 18
 EVENT_1D_HOUR_END = 22
 
 # --- 🌙 おやすみモード（深夜通知防止）設定 ---
-# 23:00〜9:00の間の通知を自動で保留する本番設定
 NIGHT_MODE_START = 23
 NIGHT_MODE_END = 9
 
@@ -46,7 +45,7 @@ def get_jst_now():
     return datetime.now(timezone.utc).astimezone(timezone(timedelta(hours=9))).replace(tzinfo=None)
 
 # ==========================================
-# 強化版 ネットワーク接続ヘルパー（サーバー負荷軽減）
+# 強化版 ネットワーク接続ヘルパー
 # ==========================================
 def fetch_url(url, retries=3):
     headers = {
@@ -65,20 +64,17 @@ def fetch_url(url, retries=3):
             print(f"💡 リトライ待ち ({i+1}/{retries}回目, {wait_time}秒後): {url}")
             time.sleep(wait_time)
 
-# YouTube動画が現在再生可能（公開済み）かを判定する関数
 def is_youtube_video_available(youtube_url):
     if not youtube_url: return False
     res = fetch_url(youtube_url)
     if not res or res.status_code != 200:
         return False
-    
     html = res.text
     upcoming_keywords = ["isUpcoming", "公開予定", "ライブ配信まで", "プレミア公開"]
     for kw in upcoming_keywords:
         if kw in html:
             print(f"⏳ YouTube動画はプレミア公開前（未再生）です: {youtube_url}")
             return False
-            
     return True
 
 def get_weather_advice(location_name):
@@ -311,7 +307,6 @@ def extract_tournament_results_from_html(html_content):
             name = re.sub(r"[\s\u3000/・\-]", "", name)
 
             if not name or len(name) < 2 or "タックル" in name or "コメント" in name: continue
-            jump_target = exact_heading[:20]
 
             img_url = None
             nxt = tag.find_next_sibling()
@@ -326,10 +321,11 @@ def extract_tournament_results_from_html(html_content):
                 nxt = nxt.find_next_sibling()
                 count += 1
                 
+            # jump_target は記号を除外した名前をそのまま指定してジャンプ精度を上げる
             if not any(r['name'] == name for r in results):
-                results.append({"rank": rank, "name": name, "image_url": img_url, "jump_target": jump_target})
+                results.append({"rank": rank, "name": name, "image_url": img_url, "jump_target": name})
                 
-    # 🍜 ラーメン賞の抽出（li要素内の画像とテキストから）
+    # 🍜 ラーメン賞等の抽出
     for li in soup.find_all('li'):
         p_tag = li.find('p')
         img_tag = li.find('img')
@@ -338,9 +334,8 @@ def extract_tournament_results_from_html(html_content):
             if "ラーメン賞" in text or "４位" in text or "4位" in text:
                 src = img_tag.get('src')
                 if src.startswith('/'): src = "https://www.kanritsuriba.com" + src
-                # ラーメン賞は選手名不要
                 if not any(r['rank'] == "ラーメン賞" for r in results):
-                    results.append({"rank": "ラーメン賞", "name": "", "image_url": src, "jump_target": text[:20]})
+                    results.append({"rank": "ラーメン賞", "name": "", "image_url": src, "jump_target": "ラーメン賞"})
                     
     return results
 
@@ -574,7 +569,7 @@ def send_result_line_flex(header_title, round_num, location, results, page_url, 
             header_text = "第２位"
         elif "3" in rank or "三" in rank: 
             bg_color = "#CD7F32"
-            formatted_name = f"🥉 準々優勝・{name}"
+            formatted_name = f"🥉 ３位・{name}"
             header_text = "第３位"
         elif "ラーメン" in rank or "4" in rank or "４" in rank: 
             bg_color = theme_color
@@ -593,6 +588,7 @@ def send_result_line_flex(header_title, round_num, location, results, page_url, 
             body_contents.append({"type": "separator", "margin": "md"})
             body_contents.append({"type": "text", "text": res['congrat_msg'], "size": "xs", "color": "#D32F2F", "weight": "bold", "margin": "md", "wrap": True})
 
+        # ジャンプ先を記号のない純粋な名前（または賞名）に指定
         jump_target = res.get('jump_target', name or rank)
         target_url = f"{page_url}#:~:text={urllib.parse.quote(jump_target)}"
 
@@ -850,15 +846,22 @@ def main():
                 
                 # ★二段階結果通知ロジック（STEP1: 速報 ➔ STEP2: 写真追加・48h・動画連動）
                 if results_data:
-                    # STEP 1: 初回検知時に「速報」としてすぐ一度送信（写真が無くても送信）
+                    # 本戦の抽出リスト（同率の複数人も全て含む）
+                    main_results = [r for r in results_data if r['rank'] in ['優勝', '２位', '３位']]
+                    
+                    # STEP 1: 初回検知時に「速報」としてすぐ一度送信
                     if n_result == 0:
                         db_result_detected_at = now.strftime("%Y-%m-%d %H:%M:%S")
                         db_updates.append(("UPDATE tournaments SET result_detected_at = ?, notified_result = 1 WHERE url = ?", (db_result_detected_at, url)))
+                        
+                        # STEP 1の時点でもラーメン賞は「写真がある場合のみ」載せる
+                        results_to_send_step1 = [r for r in results_data if r['rank'] != "ラーメン賞" or r.get('image_url')]
+                        
                         if not is_night_mode:
-                            notify_queue.append({"type": "result", "header": "📣【大会結果 速報！】", "round_num": round_num, "location": location, "results": results_data, "url": url, "theme_color": theme_color})
+                            notify_queue.append({"type": "result", "header": "📣【大会結果 速報！】", "round_num": round_num, "location": location, "results": results_to_send_step1, "url": url, "theme_color": theme_color})
                             print(f"🚀 【送信キュー追加】大会結果速報: 第{round_num}回/戦 {location}")
                     
-                    # STEP 2: 写真が全員分揃うまで最大48時間待機
+                    # STEP 2: 抽出された全員の写真が揃うまで最大48時間待機
                     elif n_result == 1:
                         if not db_result_detected_at:
                             db_result_detected_at = now.strftime("%Y-%m-%d %H:%M:%S")
@@ -867,9 +870,8 @@ def main():
                         detected_dt = datetime.strptime(db_result_detected_at, "%Y-%m-%d %H:%M:%S")
                         hours_since_detected = (now - detected_dt).total_seconds() / 3600
                         
-                        # 上位3位（優勝・2位・3位）の個々の写真数をカウント
-                        image_count = sum(1 for r in results_data if r.get('image_url') and r['rank'] in ['優勝', '２位', '３位'])
-                        is_images_complete = (image_count >= 3)
+                        # 抽出された本戦の全対象者（同率含む全員）に画像が紐付いているかチェック
+                        is_images_complete = all(r.get('image_url') for r in main_results)
                         
                         should_notify_photo = False
                         if is_images_complete:
@@ -886,12 +888,16 @@ def main():
                                 if not r.get('image_url') and podium_img_url and r['rank'] in ['優勝', '２位', '３位']:
                                     r['image_url'] = podium_img_url
 
+                            # ラーメン賞は写真がない場合はリストから除外
+                            final_results_to_send = [r for r in results_data if r['rank'] != "ラーメン賞" or r.get('image_url')]
+
                             if not is_night_mode:
-                                notify_queue.append({"type": "result", "header": "📸【大会結果 写真追加！】", "round_num": round_num, "location": location, "results": results_data, "url": url, "theme_color": theme_color})
+                                notify_queue.append({"type": "result", "header": "📸【大会結果 写真追加！】", "round_num": round_num, "location": location, "results": final_results_to_send, "url": url, "theme_color": theme_color})
                                 db_updates.append(("UPDATE tournaments SET notified_result = 2 WHERE url = ?", (url,)))
                                 print(f"🚀 【送信キュー追加】大会結果写真追加: 第{round_num}回/戦 {location}")
                         else:
-                            print(f"⏳ 結果写真追加待ち（検知から {int(hours_since_detected)}時間経過 / 取得写真 {image_count}枚）: {url}")
+                            missing_count = sum(1 for r in main_results if not r.get('image_url'))
+                            print(f"⏳ 結果写真追加待ち（検知から {int(hours_since_detected)}時間経過 / 未取得写真 {missing_count}名分）: {url}")
 
                 if n_new == 0 and not is_night_mode:
                     notify_queue.append({"type": "info", "header": "🆕【新規大会開催予定】", "round_num": round_num, "location": location, "event_date_str": event_date_str, "entry_str": entry_str, "url": url, "theme_color": theme_color, "extra_info": extra_info_dict})

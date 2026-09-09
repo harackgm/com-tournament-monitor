@@ -12,6 +12,7 @@ import xml.etree.ElementTree as ET
 # 安全制御・環境変数設定
 # ==========================================
 LINE_CHANNEL_ACCESS_TOKEN = os.environ.get("LINE_CHANNEL_ACCESS_TOKEN", "")
+LINE_USER_ID = os.environ.get("LINE_USER_ID", "")
 
 DB_PATH = "tournaments.db"
 MAX_NOTIFY_LIMIT = 5  # 大量通知ストッパー（裏側の安全装置：5件以上はLINE非送信でDB更新のみ）
@@ -159,7 +160,8 @@ def init_db():
                 notified_result INTEGER DEFAULT 0,
                 notified_video_interview INTEGER DEFAULT 0,
                 notified_video_final INTEGER DEFAULT 0,
-                winner_name TEXT DEFAULT ''
+                winner_name TEXT DEFAULT '',
+                result_detected_at DATETIME
             )
         """)
         conn.commit()
@@ -173,6 +175,8 @@ def init_db():
             c.execute("ALTER TABLE tournaments ADD COLUMN notified_video_final INTEGER DEFAULT 0")
         if "winner_name" not in column_names:
             c.execute("ALTER TABLE tournaments ADD COLUMN winner_name TEXT DEFAULT ''")
+        if "result_detected_at" not in column_names:
+            c.execute("ALTER TABLE tournaments ADD COLUMN result_detected_at DATETIME")
         conn.commit()
 
     c.execute("""
@@ -431,10 +435,10 @@ def fetch_page_data(url):
 # ==========================================
 # LINE Push Message (Flex Message カルーセル)
 # ==========================================
-# ★ 本番用：一斉送信（broadcast）仕様 ★
+# ★ テスト用：個別送信（push）仕様 ★
 def send_line_flex(header_title, round_num, location, event_date_str, entry_str, page_url, theme_color, extra_info=None):
-    if not LINE_CHANNEL_ACCESS_TOKEN: return
-    url = "https://api.line.me/v2/bot/message/broadcast"
+    if not LINE_CHANNEL_ACCESS_TOKEN or not LINE_USER_ID: return
+    url = "https://api.line.me/v2/bot/message/push"
     headers = {"Content-Type": "application/json", "Authorization": f"Bearer {LINE_CHANNEL_ACCESS_TOKEN}"}
     
     is_cc = "/cc" in page_url
@@ -512,13 +516,13 @@ def send_line_flex(header_title, round_num, location, event_date_str, entry_str,
                 ]
             })
 
-    flex_payload = {"messages": [{"type": "flex", "altText": f"【{header_title}】{title_main} {title_sub}", "contents": {"type": "carousel", "contents": [{"type": "bubble", "header": {"type": "box", "layout": "vertical", "backgroundColor": theme_color, "contents": [{"type": "text", "text": f"🎣 {header_title}", "color": "#FFFFFF", "weight": "bold", "size": "xs"}]}, "body": {"type": "box", "layout": "vertical", "spacing": "md", "contents": body_contents}, "footer": {"type": "box", "layout": "vertical", "contents": [{"type": "button", "action": {"type": "uri", "label": "🔗 詳細・エントリー", "uri": page_url}, "style": "primary", "color": theme_color}]}}]}}]}
+    flex_payload = {"to": LINE_USER_ID, "messages": [{"type": "flex", "altText": f"【{header_title}】{title_main} {title_sub}", "contents": {"type": "carousel", "contents": [{"type": "bubble", "header": {"type": "box", "layout": "vertical", "backgroundColor": theme_color, "contents": [{"type": "text", "text": f"🎣 {header_title}", "color": "#FFFFFF", "weight": "bold", "size": "xs"}]}, "body": {"type": "box", "layout": "vertical", "spacing": "md", "contents": body_contents}, "footer": {"type": "box", "layout": "vertical", "contents": [{"type": "button", "action": {"type": "uri", "label": "🔗 詳細・エントリー", "uri": page_url}, "style": "primary", "color": theme_color}]}}]}}]}
     try: requests.post(url, headers=headers, json=flex_payload, timeout=TIMEOUT_SEC)
     except Exception: pass
 
 def send_result_line_flex(header_title, round_num, location, results, page_url, theme_color):
-    if not LINE_CHANNEL_ACCESS_TOKEN: return
-    url = "https://api.line.me/v2/bot/message/broadcast"
+    if not LINE_CHANNEL_ACCESS_TOKEN or not LINE_USER_ID: return
+    url = "https://api.line.me/v2/bot/message/push"
     headers = {"Content-Type": "application/json", "Authorization": f"Bearer {LINE_CHANNEL_ACCESS_TOKEN}"}
     
     is_cc = "/cc" in page_url
@@ -571,12 +575,12 @@ def send_result_line_flex(header_title, round_num, location, results, page_url, 
             bubble["hero"] = {"type": "image", "url": img_url, "size": "full", "aspectRatio": "3:4", "aspectMode": "fit", "backgroundColor": "#FFFFFF"}
         bubbles.append(bubble)
     
-    try: requests.post(url, headers=headers, json={"messages": [{"type": "flex", "altText": f"【大会結果】{title_text_str}", "contents": {"type": "carousel", "contents": bubbles}}]}, timeout=TIMEOUT_SEC)
+    try: requests.post(url, headers=headers, json={"to": LINE_USER_ID, "messages": [{"type": "flex", "altText": f"【大会結果】{title_text_str}", "contents": {"type": "carousel", "contents": bubbles}}]}, timeout=TIMEOUT_SEC)
     except Exception: pass
 
 def send_video_line_flex(header_title, round_num, location, video_data, page_url, theme_color, main_image_url=None):
-    if not LINE_CHANNEL_ACCESS_TOKEN: return
-    url = "https://api.line.me/v2/bot/message/broadcast"
+    if not LINE_CHANNEL_ACCESS_TOKEN or not LINE_USER_ID: return
+    url = "https://api.line.me/v2/bot/message/push"
     headers = {"Content-Type": "application/json", "Authorization": f"Bearer {LINE_CHANNEL_ACCESS_TOKEN}"}
     
     is_cc = "/cc" in page_url
@@ -611,17 +615,18 @@ def send_video_line_flex(header_title, round_num, location, video_data, page_url
         }
 
     flex_payload = {
+        "to": LINE_USER_ID,
         "messages": [{"type": "flex", "altText": f"{header_title} {title_main} {title_sub}", "contents": bubble}]
     }
     try: requests.post(url, headers=headers, json=flex_payload, timeout=TIMEOUT_SEC)
     except Exception: pass
 
 # ==========================================
-# メイン監視処理（一般公開・本番運用モード）
+# メイン監視処理（一般公開・テスト運用モード）
 # ==========================================
 def main():
     now = get_jst_now()
-    print(f"[{now.strftime('%Y-%m-%d %H:%M:%S')}] 全自動監視処理（本番運用モード）を開始します。")
+    print(f"[{now.strftime('%Y-%m-%d %H:%M:%S')}] 全自動監視処理（テスト運用モード）を開始します。")
     
     conn, is_initial_setup = init_db()
     c = conn.cursor()
@@ -774,15 +779,15 @@ def main():
                 new_notified_flag = 0 if (is_night_mode and not is_initial_setup) else 1
                 c.execute(
                     """INSERT INTO tournaments 
-                    (url, round_num, location, event_date, event_datetime, entry_datetime, entry_str, reception_time, fee, original_text, is_cancelled, notified_new, notified_1d, notified_1h, notified_15m, notified_event_1d, notified_just, notified_after_24h, notified_result, notified_video_interview, notified_video_final, winner_name)
-                    VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, 0, 0, 0, 0, 0, 0, 0, 0, 0, ?)""",
+                    (url, round_num, location, event_date, event_datetime, entry_datetime, entry_str, reception_time, fee, original_text, is_cancelled, notified_new, notified_1d, notified_1h, notified_15m, notified_event_1d, notified_just, notified_after_24h, notified_result, notified_video_interview, notified_video_final, winner_name, result_detected_at)
+                    VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, 0, 0, 0, 0, 0, 0, 0, 0, 0, ?, NULL)""",
                     (url, round_num, location, event_date_str, event_dt.strftime("%Y-%m-%d %H:%M:%S") if event_dt else None, entry_dt.strftime("%Y-%m-%d %H:%M:%S") if entry_dt else None, entry_str, reception_time, fee, combined_text, is_cancelled, new_notified_flag, winner_name)
                 )
                 if not is_initial_setup and not is_night_mode:
                     notify_queue.append({"type": "info", "header": "🆕【新規大会開催予定】", "round_num": round_num, "location": location, "event_date_str": event_date_str, "entry_str": entry_str, "url": url, "theme_color": theme_color, "extra_info": extra_info_dict})
                     print(f"🚀 【送信キュー追加】新規大会: 第{round_num}回/戦 {location}")
             else:
-                (db_url, db_round, db_loc, db_event_date, db_event_dt_str, db_entry_dt_str, db_entry_str, db_reception, db_fee, db_text, db_cancelled, n_new, n_1d, n_1h, n_15m, n_event_1d, n_just, n_after_24h, n_result, n_video_int, n_video_fin, db_winner) = row
+                (db_url, db_round, db_loc, db_event_date, db_event_dt_str, db_entry_dt_str, db_entry_str, db_reception, db_fee, db_text, db_cancelled, n_new, n_1d, n_1h, n_15m, n_event_1d, n_just, n_after_24h, n_result, n_video_int, n_video_fin, db_winner, db_result_detected_at) = row
 
                 current_entry_dt_str = entry_dt.strftime("%Y-%m-%d %H:%M:%S") if entry_dt else None
                 if db_entry_dt_str and current_entry_dt_str and db_entry_dt_str != current_entry_dt_str:
@@ -792,26 +797,60 @@ def main():
 
                 if winner_name and db_winner != winner_name:
                     c.execute("UPDATE tournaments SET winner_name = ? WHERE url = ?", (winner_name, url))
+                
+                # --- 動画公開の判定 ---
+                is_final_available = False
+                if "final" in videos_data:
+                    # すでに通知済みか、現在新しく公開判定をクリアした場合
+                    if n_video_fin == 1:
+                        is_final_available = True
+                    elif is_youtube_video_available(videos_data["final"]["url"]):
+                        is_final_available = True
+                        if not is_night_mode:
+                            notify_queue.append({"type": "video", "header": "🎥【決勝戦 動画公開】", "round_num": round_num, "location": location, "video_data": videos_data["final"], "url": url, "theme_color": theme_color, "main_image_url": main_image_url})
+                            db_updates.append(("UPDATE tournaments SET notified_video_final = 1 WHERE url = ?", (url,)))
+                
                 if "interview" in videos_data and n_video_int == 0:
                     if is_youtube_video_available(videos_data["interview"]["url"]):
                         if not is_night_mode:
                             notify_queue.append({"type": "video", "header": "🎤【優勝者インタビュー公開】", "round_num": round_num, "location": location, "video_data": videos_data["interview"], "url": url, "theme_color": theme_color, "main_image_url": main_image_url})
                             db_updates.append(("UPDATE tournaments SET notified_video_interview = 1 WHERE url = ?", (url,)))
-                if "final" in videos_data and n_video_fin == 0:
-                    if is_youtube_video_available(videos_data["final"]["url"]):
-                        if not is_night_mode:
-                            notify_queue.append({"type": "video", "header": "🎥【決勝戦 動画公開】", "round_num": round_num, "location": location, "video_data": videos_data["final"], "url": url, "theme_color": theme_color, "main_image_url": main_image_url})
-                            db_updates.append(("UPDATE tournaments SET notified_video_final = 1 WHERE url = ?", (url,)))
+                
+                # ★追加・修正：大会結果の写真掲載待ちロジック（48時間＆動画公開連動）
                 if results_data and n_result == 0:
-                    days_since_event = (now - event_dt).days if event_dt else 999
-                    if days_since_event > 14: db_updates.append(("UPDATE tournaments SET notified_result = 1 WHERE url = ?", (url,)))
-                    else:
+                    # 最初に結果テキストを検知した時間を記録
+                    if not db_result_detected_at:
+                        db_result_detected_at = now.strftime("%Y-%m-%d %H:%M:%S")
+                        db_updates.append(("UPDATE tournaments SET result_detected_at = ? WHERE url = ?", (db_result_detected_at, url)))
+                    
+                    detected_dt = datetime.strptime(db_result_detected_at, "%Y-%m-%d %H:%M:%S")
+                    hours_since_detected = (now - detected_dt).total_seconds() / 3600
+                    
+                    # 取得できた結果のうち、画像URLが紐付いている枚数をカウント（目標は優勝・2位・3位の最低3枚）
+                    image_count = sum(1 for r in results_data if r.get('image_url'))
+                    is_images_complete = (image_count >= 3)
+                    
+                    # 待機を打ち切って通知を出すべきか判定
+                    should_notify_result = False
+                    if is_images_complete:
+                        should_notify_result = True
+                    elif hours_since_detected >= 48:
+                        should_notify_result = True
+                    elif is_final_available:
+                        # 48時間以内でも決勝動画が先に公開された場合は一緒に通知
+                        should_notify_result = True
+
+                    if should_notify_result:
                         if not is_night_mode:
                             notify_queue.append({"type": "result", "header": "🎊【大会結果発表！】", "round_num": round_num, "location": location, "results": results_data, "url": url, "theme_color": theme_color})
                             db_updates.append(("UPDATE tournaments SET notified_result = 1 WHERE url = ?", (url,)))
+                    else:
+                        print(f"⏳ 結果通知を保留中（検知から {int(hours_since_detected)}時間経過 / 取得写真 {image_count}枚）: {url}")
+
                 if n_new == 0 and not is_night_mode:
                     notify_queue.append({"type": "info", "header": "🆕【新規大会開催予定】", "round_num": round_num, "location": location, "event_date_str": event_date_str, "entry_str": entry_str, "url": url, "theme_color": theme_color, "extra_info": extra_info_dict})
                     c.execute("UPDATE tournaments SET notified_new = 1 WHERE url = ?", (url,))
+                
                 if is_cancelled == 1 and db_cancelled == 0:
                     notify_queue.append({"type": "info", "header": "🚨【緊急：開催中止・変更】", "round_num": round_num, "location": location, "event_date_str": event_date_str, "entry_str": "開催中止・変更が発生しました", "url": url, "theme_color": "#D32F2F"})
                     c.execute("UPDATE tournaments SET is_cancelled = 1 WHERE url = ?", (url,))

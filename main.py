@@ -234,7 +234,6 @@ def extract_main_image(html_content):
     return None
 
 def extract_podium_image(html_content):
-    """結果ページから「表彰台」の画像URLを抽出する"""
     if not html_content: return None
     soup = BeautifulSoup(html_content, "html.parser")
     for li in soup.find_all('li'):
@@ -339,14 +338,14 @@ def extract_tournament_results_from_html(html_content):
             if "ラーメン賞" in text or "４位" in text or "4位" in text:
                 src = img_tag.get('src')
                 if src.startswith('/'): src = "https://www.kanritsuriba.com" + src
-                name = text.replace("ラーメン賞", "").replace("：", "").replace(":", "").strip()
-                if not name: name = "見事獲得！"
+                # ラーメン賞は氏名不要のため名前は空文字で登録
                 if not any(r['rank'] == "ラーメン賞" for r in results):
-                    results.append({"rank": "ラーメン賞", "name": name, "image_url": src, "jump_target": text[:20]})
+                    results.append({"rank": "ラーメン賞", "name": "", "image_url": src, "jump_target": text[:20]})
                     
     return results
 
 def get_winner_congratulations_message(cursor, winner_name, current_round_num):
+    if not winner_name: return ""
     clean_winner_name = re.sub(r"[\s\u3000/・\-]", "", winner_name)
     cursor.execute("SELECT round_num, player_name FROM tournament_winners WHERE rank = '優勝'")
     rows = cursor.fetchall()
@@ -579,7 +578,8 @@ def send_result_line_flex(header_title, round_num, location, results, page_url, 
             header_text = "第３位"
         elif "ラーメン" in rank or "4" in rank or "４" in rank: 
             bg_color = theme_color
-            formatted_name = f"🍜 ラーメン賞！{name}"
+            # ラーメン賞は氏名不要
+            formatted_name = "🍜 ラーメン賞"
             header_text = "ラーメン賞"
         else:
             formatted_name = f"🏅 {rank}・{name}"
@@ -607,8 +607,10 @@ def send_result_line_flex(header_title, round_num, location, results, page_url, 
             bubble["hero"] = {"type": "image", "url": img_url, "size": "full", "aspectRatio": "3:4", "aspectMode": "fit", "backgroundColor": "#FFFFFF"}
         bubbles.append(bubble)
     
-    try: requests.post(url, headers=headers, json={"to": LINE_USER_ID, "messages": [{"type": "flex", "altText": f"【大会結果】{title_text_str}", "contents": {"type": "carousel", "contents": bubbles}}]}, timeout=TIMEOUT_SEC)
-    except Exception: pass
+    # 抽出できた結果が1件でもあれば送信
+    if bubbles:
+        try: requests.post(url, headers=headers, json={"to": LINE_USER_ID, "messages": [{"type": "flex", "altText": f"【大会結果】{title_text_str}", "contents": {"type": "carousel", "contents": bubbles}}]}, timeout=TIMEOUT_SEC)
+        except Exception: pass
 
 def send_video_line_flex(header_title, round_num, location, video_data, page_url, theme_color, main_image_url=None):
     if not LINE_CHANNEL_ACCESS_TOKEN or not LINE_USER_ID: return
@@ -833,7 +835,6 @@ def main():
                 # --- 動画公開の判定 ---
                 is_final_available = False
                 if "final" in videos_data:
-                    # すでに通知済みか、現在新しく公開判定をクリアした場合
                     if n_video_fin == 1:
                         is_final_available = True
                     elif is_youtube_video_available(videos_data["final"]["url"]):
@@ -848,42 +849,50 @@ def main():
                             notify_queue.append({"type": "video", "header": "🎤【優勝者インタビュー公開】", "round_num": round_num, "location": location, "video_data": videos_data["interview"], "url": url, "theme_color": theme_color, "main_image_url": main_image_url})
                             db_updates.append(("UPDATE tournaments SET notified_video_interview = 1 WHERE url = ?", (url,)))
                 
-                # ★追加・修正：大会結果の写真掲載待ち＆代替画像適用ロジック
-                if results_data and n_result == 0:
-                    # 最初に結果テキストを検知した時間を記録
-                    if not db_result_detected_at:
+                # ★追加・修正：二段階通知ロジック（速報 ＆ 写真追加・代替補完）
+                if results_data:
+                    # 【初回検知】テキスト速報を送信（通知フラグ 0 -> 1）
+                    if n_result == 0:
                         db_result_detected_at = now.strftime("%Y-%m-%d %H:%M:%S")
-                        db_updates.append(("UPDATE tournaments SET result_detected_at = ? WHERE url = ?", (db_result_detected_at, url)))
-                    
-                    detected_dt = datetime.strptime(db_result_detected_at, "%Y-%m-%d %H:%M:%S")
-                    hours_since_detected = (now - detected_dt).total_seconds() / 3600
-                    
-                    # 取得できた結果のうち、上位3位(優勝、2位、3位)の画像が揃っているかカウント
-                    image_count = sum(1 for r in results_data if r.get('image_url') and r['rank'] in ['優勝', '２位', '３位'])
-                    is_images_complete = (image_count >= 3)
-                    
-                    # 待機を打ち切って通知を出すべきか判定
-                    should_notify_result = False
-                    if is_images_complete:
-                        should_notify_result = True
-                    elif hours_since_detected >= 48:
-                        should_notify_result = True
-                    elif is_final_available:
-                        # 48時間以内でも決勝動画が先に公開された場合は一緒に通知
-                        should_notify_result = True
-
-                    if should_notify_result:
-                        # 欠けている画像がある場合は「表彰台」の画像を取得して代用する
-                        podium_img_url = extract_podium_image(combined_html)
-                        for r in results_data:
-                            if not r.get('image_url') and podium_img_url:
-                                r['image_url'] = podium_img_url
-
+                        db_updates.append(("UPDATE tournaments SET result_detected_at = ?, notified_result = 1 WHERE url = ?", (db_result_detected_at, url)))
                         if not is_night_mode:
-                            notify_queue.append({"type": "result", "header": "🎊【大会結果発表！】", "round_num": round_num, "location": location, "results": results_data, "url": url, "theme_color": theme_color})
-                            db_updates.append(("UPDATE tournaments SET notified_result = 1 WHERE url = ?", (url,)))
-                    else:
-                        print(f"⏳ 結果通知を保留中（検知から {int(hours_since_detected)}時間経過 / 取得写真 {image_count}枚）: {url}")
+                            notify_queue.append({"type": "result", "header": "📣【大会結果 速報！】", "round_num": round_num, "location": location, "results": results_data, "url": url, "theme_color": theme_color})
+                    
+                    # 【再通知待機】写真コンプリートを待機（通知フラグ 1 -> 2）
+                    elif n_result == 1:
+                        # 既存データなどで detected_at が無い場合の救済
+                        if not db_result_detected_at:
+                            db_result_detected_at = now.strftime("%Y-%m-%d %H:%M:%S")
+                            db_updates.append(("UPDATE tournaments SET result_detected_at = ? WHERE url = ?", (db_result_detected_at, url)))
+                        
+                        detected_dt = datetime.strptime(db_result_detected_at, "%Y-%m-%d %H:%M:%S")
+                        hours_since_detected = (now - detected_dt).total_seconds() / 3600
+                        
+                        # 上位3位の個々の画像が揃っているかカウント（ラーメン賞はカウント対象外）
+                        image_count = sum(1 for r in results_data if r.get('image_url') and r['rank'] in ['優勝', '２位', '３位'])
+                        is_images_complete = (image_count >= 3)
+                        
+                        # 写真追加版として再通知を出すべきか判定
+                        should_notify_photo = False
+                        if is_images_complete:
+                            should_notify_photo = True
+                        elif hours_since_detected >= 48:
+                            should_notify_photo = True
+                        elif is_final_available:
+                            should_notify_photo = True
+
+                        if should_notify_photo:
+                            # 欠けている画像がある場合は「表彰台」の画像で代用する
+                            podium_img_url = extract_podium_image(combined_html)
+                            for r in results_data:
+                                if not r.get('image_url') and podium_img_url and r['rank'] in ['優勝', '２位', '３位']:
+                                    r['image_url'] = podium_img_url
+
+                            if not is_night_mode:
+                                notify_queue.append({"type": "result", "header": "📸【大会結果 写真追加！】", "round_num": round_num, "location": location, "results": results_data, "url": url, "theme_color": theme_color})
+                                db_updates.append(("UPDATE tournaments SET notified_result = 2 WHERE url = ?", (url,)))
+                        else:
+                            print(f"⏳ 結果写真追加待ち（検知から {int(hours_since_detected)}時間経過 / 取得写真 {image_count}枚）: {url}")
 
                 if n_new == 0 and not is_night_mode:
                     notify_queue.append({"type": "info", "header": "🆕【新規大会開催予定】", "round_num": round_num, "location": location, "event_date_str": event_date_str, "entry_str": entry_str, "url": url, "theme_color": theme_color, "extra_info": extra_info_dict})

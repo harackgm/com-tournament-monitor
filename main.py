@@ -12,7 +12,7 @@ import xml.etree.ElementTree as ET
 # 安全制御・環境変数設定
 # ==========================================
 LINE_CHANNEL_ACCESS_TOKEN = os.environ.get("LINE_CHANNEL_ACCESS_TOKEN", "")
-LINE_USER_ID = os.environ.get("LINE_USER_ID", "")  # テスト用に復活
+# ※本番用（一斉送信）のため LINE_USER_ID は使用しません
 
 DB_PATH = "tournaments.db"
 MAX_NOTIFY_LIMIT = 5  # 大量通知ストッパー
@@ -194,7 +194,7 @@ def init_db():
     return conn, is_initial_setup
 
 def get_theme_color(location_name):
-    if any(kw in location_name for kw in ["栃木", "群群馬", "キングフィッシャー", "上永野", "みどり", "なら山", "大芦", "増井", "宇都宮", "アメイズ", "中之沢", "赤城", "川場", "沼田", "宮城", "ベリーズ", "イワナ"]):
+    if any(kw in location_name for kw in ["栃木", "群馬", "キングフィッシャー", "上永野", "みどり", "なら山", "大芦", "増井", "宇都宮", "アメイズ", "中之沢", "赤城", "川場", "沼田", "宮城", "ベリーズ", "イワナ"]):
         return "#03A9F4"  
     elif any(kw in location_name for kw in ["千葉", "茨城", "ジョイバレー", "けんた", "千葉川すそ", "座間", "高萩", "エリアJ"]):
         return "#FF5722"  
@@ -482,10 +482,10 @@ def fetch_page_data(url):
 # ==========================================
 # LINE Push Message (Flex Message カルーセル)
 # ==========================================
-# ★ テスト用：個別送信（push）仕様 ★
+# ★ 本番用：一斉送信（broadcast）仕様 ★
 def send_line_flex(header_title, round_num, location, event_date_str, entry_str, page_url, theme_color, extra_info=None):
-    if not LINE_CHANNEL_ACCESS_TOKEN or not LINE_USER_ID: return
-    url = "https://api.line.me/v2/bot/message/push"
+    if not LINE_CHANNEL_ACCESS_TOKEN: return
+    url = "https://api.line.me/v2/bot/message/broadcast"
     headers = {"Content-Type": "application/json", "Authorization": f"Bearer {LINE_CHANNEL_ACCESS_TOKEN}"}
     
     is_cc = "/cc" in page_url
@@ -563,13 +563,13 @@ def send_line_flex(header_title, round_num, location, event_date_str, entry_str,
                 ]
             })
 
-    flex_payload = {"to": LINE_USER_ID, "messages": [{"type": "flex", "altText": f"【{header_title}】{title_main} {title_sub}", "contents": {"type": "carousel", "contents": [{"type": "bubble", "header": {"type": "box", "layout": "vertical", "backgroundColor": theme_color, "contents": [{"type": "text", "text": f"🎣 {header_title}", "color": "#FFFFFF", "weight": "bold", "size": "xs"}]}, "body": {"type": "box", "layout": "vertical", "spacing": "md", "contents": body_contents}, "footer": {"type": "box", "layout": "vertical", "contents": [{"type": "button", "action": {"type": "uri", "label": "🔗 詳細・エントリー", "uri": page_url}, "style": "primary", "color": theme_color}]}}]}}]}
+    flex_payload = {"messages": [{"type": "flex", "altText": f"【{header_title}】{title_main} {title_sub}", "contents": {"type": "carousel", "contents": [{"type": "bubble", "header": {"type": "box", "layout": "vertical", "backgroundColor": theme_color, "contents": [{"type": "text", "text": f"🎣 {header_title}", "color": "#FFFFFF", "weight": "bold", "size": "xs"}]}, "body": {"type": "box", "layout": "vertical", "spacing": "md", "contents": body_contents}, "footer": {"type": "box", "layout": "vertical", "contents": [{"type": "button", "action": {"type": "uri", "label": "🔗 詳細・エントリー", "uri": page_url}, "style": "primary", "color": theme_color}]}}]}}]}
     try: requests.post(url, headers=headers, json=flex_payload, timeout=TIMEOUT_SEC)
     except Exception: pass
 
 def send_result_line_flex(header_title, round_num, location, results, page_url, theme_color):
-    if not LINE_CHANNEL_ACCESS_TOKEN or not LINE_USER_ID: return
-    url = "https://api.line.me/v2/bot/message/push"
+    if not LINE_CHANNEL_ACCESS_TOKEN: return
+    url = "https://api.line.me/v2/bot/message/broadcast"
     headers = {"Content-Type": "application/json", "Authorization": f"Bearer {LINE_CHANNEL_ACCESS_TOKEN}"}
     
     is_cc = "/cc" in page_url
@@ -627,12 +627,12 @@ def send_result_line_flex(header_title, round_num, location, results, page_url, 
         bubbles.append(bubble)
     
     if bubbles:
-        try: requests.post(url, headers=headers, json={"to": LINE_USER_ID, "messages": [{"type": "flex", "altText": f"【大会結果】{title_text_str}", "contents": {"type": "carousel", "contents": bubbles}}]}, timeout=TIMEOUT_SEC)
+        try: requests.post(url, headers=headers, json={"messages": [{"type": "flex", "altText": f"【大会結果】{title_text_str}", "contents": {"type": "carousel", "contents": bubbles}}]}, timeout=TIMEOUT_SEC)
         except Exception: pass
 
 def send_video_line_flex(header_title, round_num, location, video_data, page_url, theme_color, main_image_url=None):
-    if not LINE_CHANNEL_ACCESS_TOKEN or not LINE_USER_ID: return
-    url = "https://api.line.me/v2/bot/message/push"
+    if not LINE_CHANNEL_ACCESS_TOKEN: return
+    url = "https://api.line.me/v2/bot/message/broadcast"
     headers = {"Content-Type": "application/json", "Authorization": f"Bearer {LINE_CHANNEL_ACCESS_TOKEN}"}
     
     is_cc = "/cc" in page_url
@@ -667,18 +667,17 @@ def send_video_line_flex(header_title, round_num, location, video_data, page_url
         }
 
     flex_payload = {
-        "to": LINE_USER_ID,
         "messages": [{"type": "flex", "altText": f"{header_title} {title_main} {title_sub}", "contents": bubble}]
     }
     try: requests.post(url, headers=headers, json=flex_payload, timeout=TIMEOUT_SEC)
     except Exception: pass
 
 # ==========================================
-# メイン監視処理（一般公開・テスト運用モード）
+# メイン監視処理（一般公開・本番運用モード）
 # ==========================================
 def main():
     now = get_jst_now()
-    print(f"[{now.strftime('%Y-%m-%d %H:%M:%S')}] 全自動監視処理（テスト運用モード）を開始します。")
+    print(f"[{now.strftime('%Y-%m-%d %H:%M:%S')}] 全自動監視処理（本番運用モード）を開始します。")
     
     conn, is_initial_setup = init_db()
     c = conn.cursor()
@@ -816,7 +815,7 @@ def main():
 
             results_data = extract_tournament_results_from_html(combined_html)
             
-            # ★ 修正箇所：動画の公開予定日時の抽出を強化
+            # ★ 更新：動画の公開予定日時の抽出機能を強化
             videos_data = extract_videos_from_html(combined_html, url_year)
 
             winner_name = ""

@@ -41,9 +41,8 @@ def fetch_url(url, retries=3):
             res = requests.get(url, headers=headers, timeout=TIMEOUT_SEC)
             res.raise_for_status()
             return res
-        except Exception as e:
-            if i == retries - 1:
-                return None
+        except Exception:
+            if i == retries - 1: return None
             time.sleep(2)
 
 def fetch_page_data(url):
@@ -57,8 +56,6 @@ def fetch_page_data(url):
             
             text_space = content_area.get_text(separator=" ", strip=True)
             text_lines = [line.strip() for line in content_area.get_text(separator="\n", strip=True).split("\n") if line.strip()]
-            
-            # ★HTML全体を返すことで、og:imageタグ等を検索できるように修正
             return text_space, res.text, title_text, text_lines
         except Exception: pass
     return "", "", "", []
@@ -66,35 +63,58 @@ def fetch_page_data(url):
 # ==========================================
 # テキスト解析ヘルパー関数群
 # ==========================================
-def extract_main_image(html_content):
-    if not html_content: return None
-    soup = BeautifulSoup(html_content, "html.parser")
+# ★ 修正: ページ1とページ2を受け取り、確実にお知らせ用の横長風景画を取得する関数
+def extract_landscape_image(html_p1, html_p2):
+    # 結果掲載後はページ2に概要が移動するため、ページ2が存在すれば優先する
+    target_html = html_p2 if html_p2 else html_p1
+    if not target_html: return None
     
-    # 💡 優先1: OGP画像（SNS共有用の綺麗な横長アイキャッチ）
-    og_img = soup.find('meta', property='og:image')
-    if og_img and og_img.get('content'):
-        src = og_img.get('content')
+    soup = BeautifulSoup(target_html, "html.parser")
+    content_area = soup.find("div", class_="entry-content")
+    if not content_area: return None
+    
+    # 優先: 横長の画像を探す（縦長ポスターを回避）
+    for img in content_area.find_all('img'):
+        src = img.get('src')
+        if not src: continue
+        
+        # 優勝者や表彰台の画像は除外
+        alt = img.get('alt', '')
+        if "優勝" in alt or "表彰台" in alt: continue
+        
+        width = img.get('width')
+        height = img.get('height')
+        if width and height:
+            try:
+                w = int(re.sub(r'\D', '', str(width)))
+                h = int(re.sub(r'\D', '', str(height)))
+                if w > h:  # 横長画像の場合
+                    if src.startswith('/'): src = "https://www.kanritsuriba.com" + src
+                    return re.sub(r'-\d+x\d+(?=\.[a-zA-Z]+$)', '', src)
+            except ValueError:
+                pass
+                
+    # 横長が見つからなければ、除外条件に当てはまらない最初の画像を返す
+    for img in content_area.find_all('img'):
+        src = img.get('src')
+        if not src: continue
+        alt = img.get('alt', '')
+        if "優勝" in alt or "表彰台" in alt: continue
+        if src.startswith('/'): src = "https://www.kanritsuriba.com" + src
         return re.sub(r'-\d+x\d+(?=\.[a-zA-Z]+$)', '', src)
         
-    # 💡 優先2: eye-catchクラス内の画像
-    eye_catch = soup.find(class_='eye-catch')
-    if eye_catch:
-        img = eye_catch.find('img')
-        if img and img.get('src'):
-            src = img.get('src')
-            if src.startswith('/'): src = "https://www.kanritsuriba.com" + src
-            return re.sub(r'-\d+x\d+(?=\.[a-zA-Z]+$)', '', src)
-
-    # 💡 優先3: entry-content内の最初の画像
-    content_area = soup.find("div", class_="entry-content")
-    if content_area:
-        img = content_area.find('img')
-        if img and img.get('src'):
-            src = img.get('src')
-            if src.startswith('/'):
-                src = "https://www.kanritsuriba.com" + src
-            return re.sub(r'-\d+x\d+(?=\.[a-zA-Z]+$)', '', src)
     return None
+
+def get_theme_color(location_name):
+    if any(kw in location_name for kw in ["栃木", "群馬", "キングフィッシャー", "上永野", "みどり", "なら山", "大芦", "増井", "宇都宮", "アメイズ", "中之沢", "赤城", "川場", "沼田", "宮城", "ベリーズ", "イワナ"]): return "#03A9F4"  
+    elif any(kw in location_name for kw in ["千葉", "茨城", "ジョイバレー", "けんた", "千葉川すそ", "座間", "高萩", "エリアJ"]): return "#FF5722"  
+    elif any(kw in location_name for kw in ["埼玉", "朝霞", "吉羽園", "しらこばと", "川越"]): return "#E91E63"  
+    elif any(kw in location_name for kw in ["神奈川", "上浜", "王禅寺", "開成", "足柄", "ベリーパーク"]): return "#9C27B0"  
+    elif any(kw in location_name for kw in ["東京", "浅川", "秋川"]): return "#3F51B5"  
+    elif any(kw in location_name for kw in ["静岡", "浜名湖", "東山湖", "すその", "柿田川"]): return "#FF9800"  
+    elif any(kw in location_name for kw in ["山梨", "長野", "白州", "シルフ", "竜華池", "鹿島槍"]): return "#4CAF50"  
+    elif any(kw in location_name for kw in ["三重", "岐阜", "滋賀", "サンクチュアリ", "サンク", "瑞浪", "平谷", "醒井"]): return "#009688"  
+    return "#607D8B"
 
 # ==========================================
 # LINE Push Message (Flex Message カルーセル)
@@ -105,9 +125,8 @@ def send_line_flex(header_title, round_num, location, event_date_str, entry_str,
     url = "https://api.line.me/v2/bot/message/push"
     headers = {"Content-Type": "application/json", "Authorization": f"Bearer {LINE_CHANNEL_ACCESS_TOKEN}"}
     
-    is_cc = "/cc" in page_url
-    title_main = f"第{round_num}回" if is_cc else f"第{round_num}戦"
-    title_sub = location if is_cc else f"{location}大会"
+    title_main = f"第{round_num}回" if "/cc" in page_url else f"第{round_num}戦"
+    title_sub = location if "/cc" in page_url else f"{location}大会"
     
     is_day_before_notice = "明日大会開催" in header_title
 
@@ -126,58 +145,31 @@ def send_line_flex(header_title, round_num, location, event_date_str, entry_str,
             ]
         })
         body_contents.append({"type": "separator", "margin": "md"})
-        
         if extra_info:
             body_contents.append({
-                "type": "box", 
-                "layout": "vertical", 
-                "spacing": "sm",
-                "margin": "md", 
-                "contents": [
-                    {"type": "text", "text": f"📋 受付時間: {extra_info.get('reception', '情報参照')}", "size": "md", "color": "#D32F2F", "weight": "bold"}, 
-                    {"type": "text", "text": f"💰 参加費用: {extra_info.get('fee', '情報参照')}", "size": "md", "color": "#D32F2F", "weight": "bold"}
-                ]
+                "type": "box", "layout": "vertical", "spacing": "sm", "margin": "md", 
+                "contents": [{"type": "text", "text": f"📋 受付時間: {extra_info.get('reception', '情報参照')}", "size": "md", "color": "#D32F2F", "weight": "bold"}, {"type": "text", "text": f"💰 参加費用: {extra_info.get('fee', '情報参照')}", "size": "md", "color": "#D32F2F", "weight": "bold"}]
             })
             if "weather_advice" in extra_info:
                 body_contents.append({"type": "separator", "margin": "md"})
                 body_contents.append({
-                    "type": "box", 
-                    "layout": "vertical", 
-                    "spacing": "sm", 
-                    "margin": "md",
-                    "contents": [
-                        {"type": "text", "text": "🌤 明日の天候・コンディション", "size": "sm", "color": "#888888", "weight": "bold"}, 
-                        {"type": "text", "text": extra_info["weather_advice"], "size": "md", "color": "#333333", "wrap": True, "weight": "bold"}
-                    ]
+                    "type": "box", "layout": "vertical", "spacing": "sm", "margin": "md",
+                    "contents": [{"type": "text", "text": "🌤 明日の天候・コンディション", "size": "sm", "color": "#888888", "weight": "bold"}, {"type": "text", "text": extra_info["weather_advice"], "size": "md", "color": "#333333", "wrap": True, "weight": "bold"}]
                 })
     else:
         body_contents.append({"type": "box", "layout": "vertical", "spacing": "xs", "margin": "md", "contents": [{"type": "text", "text": "📅 大会開催日", "size": "xs", "color": "#888888"}, {"type": "text", "text": event_date_str, "size": "xl", "color": "#333333"}]})
         body_contents.append({"type": "box", "layout": "vertical", "spacing": "xs", "contents": [{"type": "text", "text": "⏰ エントリー開始日時", "size": "xs", "color": "#888888"}, {"type": "text", "text": entry_str, "size": "md", "color": "#E53935", "wrap": True}]})
-        
         if extra_info:
             body_contents.append({"type": "separator", "margin": "md"})
             if "entry_condition" in extra_info:
                 body_contents.append({
-                    "type": "box",
-                    "layout": "vertical",
-                    "spacing": "xs",
-                    "margin": "md",
-                    "contents": [
-                        {"type": "text", "text": "✅ エントリー参加条件", "size": "xs", "color": "#888888", "weight": "bold"},
-                        {"type": "text", "text": extra_info["entry_condition"], "size": "sm", "color": "#D32F2F", "wrap": True, "weight": "bold"}
-                    ]
+                    "type": "box", "layout": "vertical", "spacing": "xs", "margin": "md",
+                    "contents": [{"type": "text", "text": "✅ エントリー参加条件", "size": "xs", "color": "#888888", "weight": "bold"}, {"type": "text", "text": extra_info["entry_condition"], "size": "sm", "color": "#D32F2F", "wrap": True, "weight": "bold"}]
                 })
                 body_contents.append({"type": "separator", "margin": "md"})
-
             body_contents.append({
-                "type": "box", 
-                "layout": "vertical", 
-                "spacing": "xs",
-                "margin": "md", 
-                "contents": [
-                    {"type": "text", "text": f"📋 受付時間: {extra_info.get('reception', '情報参照')}", "size": "sm", "color": "#555555"}, 
-                    {"type": "text", "text": f"💰 参加費用: {extra_info.get('fee', '情報参照')}", "size": "sm", "color": "#555555"}
-                ]
+                "type": "box", "layout": "vertical", "spacing": "xs", "margin": "md", 
+                "contents": [{"type": "text", "text": f"📋 受付時間: {extra_info.get('reception', '情報参照')}", "size": "sm", "color": "#555555"}, {"type": "text", "text": f"💰 参加費用: {extra_info.get('fee', '情報参照')}", "size": "sm", "color": "#555555"}]
             })
 
     bubble = {
@@ -187,7 +179,7 @@ def send_line_flex(header_title, round_num, location, event_date_str, entry_str,
         "footer": {"type": "box", "layout": "vertical", "contents": [{"type": "button", "action": {"type": "uri", "label": "🔗 詳細・エントリー", "uri": page_url}, "style": "primary", "color": theme_color}]}
     }
 
-    # 💡 修正: 横長(16:9)の cover（枠いっぱいに広げる）設定で綺麗に収める
+    # ★ 横長風景画は16:9で cover 指定（迫力ある表示）
     if main_image_url:
         bubble["hero"] = {
             "type": "image",
@@ -206,8 +198,7 @@ def send_result_line_flex(header_title, round_num, location, results, page_url, 
     url = "https://api.line.me/v2/bot/message/push"
     headers = {"Content-Type": "application/json", "Authorization": f"Bearer {LINE_CHANNEL_ACCESS_TOKEN}"}
     
-    is_cc = "/cc" in page_url
-    title_text_str = f"第{round_num}回 {location}" if is_cc else f"第{round_num}戦 {location}"
+    title_text_str = f"第{round_num}回 {location}" if "/cc" in page_url else f"第{round_num}戦 {location}"
 
     bubbles = []
     for res in results[:10]:
@@ -220,21 +211,22 @@ def send_result_line_flex(header_title, round_num, location, results, page_url, 
 
         bg_color = theme_color
         
+        # ★ 修正: 判定を強化（全角・半角・漢数字すべてカバー）
         is_winner = False
-        if "優勝" in rank or "1" in rank or "１" in rank: 
+        if any(c in rank for c in ["1", "１", "一", "優勝"]): 
             bg_color = "#D4AF37"
             formatted_name = f"🏆 優勝！{name}"
             header_text = "優勝"
             is_winner = True
-        elif "2" in rank or "２" in rank or "準" in rank: 
+        elif any(c in rank for c in ["2", "２", "二", "準"]): 
             bg_color = "#C0C0C0"
             formatted_name = f"🥈 準優勝・{name}"
             header_text = "第２位"
-        elif "3" in rank or "三" in rank: 
-            bg_color = "#CD7F32"
-            formatted_name = f"🥉 ３位・{name}"
+        elif any(c in rank for c in ["3", "３", "三"]): 
+            bg_color = "#CD7F32"  # ブロンズカラーを確実に適用
+            formatted_name = f"🥉 第３位・{name}"
             header_text = "第３位"
-        elif "ラーメン" in rank or "4" in rank or "４" in rank: 
+        elif any(c in rank for c in ["4", "４", "四", "ラーメン"]): 
             bg_color = theme_color
             formatted_name = "🍜 ラーメン賞"
             header_text = "ラーメン賞"
@@ -260,7 +252,7 @@ def send_result_line_flex(header_title, round_num, location, results, page_url, 
             "body": {"type": "box", "layout": "vertical", "alignItems": "center", "contents": body_contents}, 
             "footer": {"type": "box", "layout": "vertical", "contents": [{"type": "button", "action": {"type": "uri", "label": "🔗 結果詳細を見る", "uri": target_url}, "style": "primary", "color": bg_color}]}
         }
-        # 💡 修正: 元の全画面表示（cover）にし、縦長枠（3:4）に戻して額縁を排除
+        # ★ 修正: 白い額縁を撤廃し、全画面(cover)の縦長枠(3:4)に戻す
         if img_url:
             bubble["hero"] = {"type": "image", "url": img_url, "size": "full", "aspectRatio": "3:4", "aspectMode": "cover", "backgroundColor": "#FFFFFF"}
         bubbles.append(bubble)
@@ -274,9 +266,8 @@ def send_video_line_flex(header_title, round_num, location, video_data, page_url
     url = "https://api.line.me/v2/bot/message/push"
     headers = {"Content-Type": "application/json", "Authorization": f"Bearer {LINE_CHANNEL_ACCESS_TOKEN}"}
     
-    is_cc = "/cc" in page_url
-    title_main = f"第{round_num}回" if is_cc else f"第{round_num}戦"
-    title_sub = location if is_cc else f"{location}大会"
+    title_main = f"第{round_num}回" if "/cc" in page_url else f"第{round_num}戦"
+    title_sub = location if "/cc" in page_url else f"{location}大会"
 
     vid_title = video_data.get("title", "動画が公開されました")
     vid_url = video_data.get("url", page_url)
@@ -295,21 +286,16 @@ def send_video_line_flex(header_title, round_num, location, video_data, page_url
         "footer": {"type": "box", "layout": "vertical", "spacing": "sm", "contents": [{"type": "button", "action": {"type": "uri", "label": "▶️ 動画を見る", "uri": vid_url}, "style": "primary", "color": theme_color}, {"type": "button", "action": {"type": "uri", "label": "🔗 大会ページへ", "uri": page_url}, "style": "secondary"}]}
     }
     
-    # 💡 修正: 横長(16:9)の cover（枠いっぱいに広げる）設定
     if main_image_url:
         bubble["hero"] = {
             "type": "image",
             "url": main_image_url,
             "size": "full",
             "aspectRatio": "16:9",
-            "aspectMode": "cover",
-            "backgroundColor": "#FFFFFF"
+            "aspectMode": "cover"
         }
 
-    flex_payload = {
-        "to": LINE_USER_ID,
-        "messages": [{"type": "flex", "altText": f"{header_title} {title_main} {title_sub}", "contents": bubble}]
-    }
+    flex_payload = {"to": LINE_USER_ID, "messages": [{"type": "flex", "altText": f"{header_title} {title_main} {title_sub}", "contents": bubble}]}
     try: requests.post(url, headers=headers, json=flex_payload, timeout=TIMEOUT_SEC)
     except Exception: pass
 
@@ -322,8 +308,8 @@ def run_design_test_only():
     theme_color = "#4CAF50" # シルフの色
     url = "https://www.kanritsuriba.com/at/dummy"
     
-    # 💡 シルフの横長風景画のURLをテスト用に指定
-    main_img = "https://www.kanritsuriba.com/at/wp-content/uploads/2026/05/2617fff.jpg"
+    # ★ 指定いただいた上浜の風景画像を正しくセット
+    main_img = "https://www.kanritsuriba.com/at/wp-content/uploads/2026/05/kamihama_1200.jpg"
     
     extra_info_base = {
         "reception": "6:00-6:30", 

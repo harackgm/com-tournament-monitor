@@ -12,7 +12,7 @@ import xml.etree.ElementTree as ET
 # 安全制御・環境変数設定
 # ==========================================
 LINE_CHANNEL_ACCESS_TOKEN = os.environ.get("LINE_CHANNEL_ACCESS_TOKEN", "")
-LINE_USER_ID = os.environ.get("LINE_USER_ID", "")  # ★ テスト配信用に復活
+LINE_USER_ID = os.environ.get("LINE_USER_ID", "")  # ★ テスト配信用
 
 DB_PATH = "tournaments.db"
 TIMEOUT_SEC = 10  # 通信タイムアウト時間(10秒)
@@ -28,6 +28,73 @@ LOCATION_COORDS = {
     "白州": (35.80, 138.31),
     "上浜": (39.51, 139.95),
 }
+
+# ==========================================
+# 強化版 ネットワーク接続ヘルパー
+# ==========================================
+def fetch_url(url, retries=3):
+    headers = {
+        "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36"
+    }
+    for i in range(retries):
+        try:
+            res = requests.get(url, headers=headers, timeout=TIMEOUT_SEC)
+            res.raise_for_status()
+            return res
+        except Exception as e:
+            if i == retries - 1:
+                return None
+            time.sleep(2)
+
+def fetch_page_data(url):
+    res = fetch_url(url)
+    if res and res.status_code == 200:
+        try:
+            soup = BeautifulSoup(res.text, "html.parser")
+            h1_tag = soup.find('h1', class_='entry-title')
+            title_text = h1_tag.get_text(strip=True) if h1_tag else ""
+            content_area = soup.find("div", class_="entry-content") or soup
+            
+            text_space = content_area.get_text(separator=" ", strip=True)
+            text_lines = [line.strip() for line in content_area.get_text(separator="\n", strip=True).split("\n") if line.strip()]
+            
+            # ★HTML全体を返すことで、og:imageタグ等を検索できるように修正
+            return text_space, res.text, title_text, text_lines
+        except Exception: pass
+    return "", "", "", []
+
+# ==========================================
+# テキスト解析ヘルパー関数群
+# ==========================================
+def extract_main_image(html_content):
+    if not html_content: return None
+    soup = BeautifulSoup(html_content, "html.parser")
+    
+    # 💡 優先1: OGP画像（SNS共有用の綺麗な横長アイキャッチ）
+    og_img = soup.find('meta', property='og:image')
+    if og_img and og_img.get('content'):
+        src = og_img.get('content')
+        return re.sub(r'-\d+x\d+(?=\.[a-zA-Z]+$)', '', src)
+        
+    # 💡 優先2: eye-catchクラス内の画像
+    eye_catch = soup.find(class_='eye-catch')
+    if eye_catch:
+        img = eye_catch.find('img')
+        if img and img.get('src'):
+            src = img.get('src')
+            if src.startswith('/'): src = "https://www.kanritsuriba.com" + src
+            return re.sub(r'-\d+x\d+(?=\.[a-zA-Z]+$)', '', src)
+
+    # 💡 優先3: entry-content内の最初の画像
+    content_area = soup.find("div", class_="entry-content")
+    if content_area:
+        img = content_area.find('img')
+        if img and img.get('src'):
+            src = img.get('src')
+            if src.startswith('/'):
+                src = "https://www.kanritsuriba.com" + src
+            return re.sub(r'-\d+x\d+(?=\.[a-zA-Z]+$)', '', src)
+    return None
 
 # ==========================================
 # LINE Push Message (Flex Message カルーセル)
@@ -120,14 +187,14 @@ def send_line_flex(header_title, round_num, location, event_date_str, entry_str,
         "footer": {"type": "box", "layout": "vertical", "contents": [{"type": "button", "action": {"type": "uri", "label": "🔗 詳細・エントリー", "uri": page_url}, "style": "primary", "color": theme_color}]}
     }
 
+    # 💡 修正: 横長(16:9)の cover（枠いっぱいに広げる）設定で綺麗に収める
     if main_image_url:
         bubble["hero"] = {
             "type": "image",
             "url": main_image_url,
             "size": "full",
             "aspectRatio": "16:9",
-            "aspectMode": "fit",
-            "backgroundColor": "#FFFFFF"
+            "aspectMode": "cover"
         }
 
     flex_payload = {"to": LINE_USER_ID, "messages": [{"type": "flex", "altText": f"【{header_title}】{title_main} {title_sub}", "contents": {"type": "carousel", "contents": [bubble]}}]}
@@ -193,8 +260,9 @@ def send_result_line_flex(header_title, round_num, location, results, page_url, 
             "body": {"type": "box", "layout": "vertical", "alignItems": "center", "contents": body_contents}, 
             "footer": {"type": "box", "layout": "vertical", "contents": [{"type": "button", "action": {"type": "uri", "label": "🔗 結果詳細を見る", "uri": target_url}, "style": "primary", "color": bg_color}]}
         }
+        # 💡 修正: 元の全画面表示（cover）にし、縦長枠（3:4）に戻して額縁を排除
         if img_url:
-            bubble["hero"] = {"type": "image", "url": img_url, "size": "full", "aspectRatio": "4:3", "aspectMode": "fit", "backgroundColor": "#FFFFFF"}
+            bubble["hero"] = {"type": "image", "url": img_url, "size": "full", "aspectRatio": "3:4", "aspectMode": "cover", "backgroundColor": "#FFFFFF"}
         bubbles.append(bubble)
     
     if bubbles:
@@ -227,13 +295,14 @@ def send_video_line_flex(header_title, round_num, location, video_data, page_url
         "footer": {"type": "box", "layout": "vertical", "spacing": "sm", "contents": [{"type": "button", "action": {"type": "uri", "label": "▶️ 動画を見る", "uri": vid_url}, "style": "primary", "color": theme_color}, {"type": "button", "action": {"type": "uri", "label": "🔗 大会ページへ", "uri": page_url}, "style": "secondary"}]}
     }
     
+    # 💡 修正: 横長(16:9)の cover（枠いっぱいに広げる）設定
     if main_image_url:
         bubble["hero"] = {
             "type": "image",
             "url": main_image_url,
             "size": "full",
             "aspectRatio": "16:9",
-            "aspectMode": "fit",
+            "aspectMode": "cover",
             "backgroundColor": "#FFFFFF"
         }
 
@@ -253,8 +322,8 @@ def run_design_test_only():
     theme_color = "#4CAF50" # シルフの色
     url = "https://www.kanritsuriba.com/at/dummy"
     
-    # 実際のシルフ大会のイメージ画像URL（提供ソースより）
-    main_img = "https://www.kanritsuriba.com/at/wp-content/uploads/2026/07/2621ec-240x240.jpg"
+    # 💡 シルフの横長風景画のURLをテスト用に指定
+    main_img = "https://www.kanritsuriba.com/at/wp-content/uploads/2026/05/2617fff.jpg"
     
     extra_info_base = {
         "reception": "6:00-6:30", 
@@ -313,9 +382,7 @@ def run_design_test_only():
     print("=== テスト通知完了 ===")
 
 def main():
-    # ★今回はDBを汚さないよう、テスト送信だけを実行して終了させます。
     run_design_test_only()
-    return
 
 if __name__ == "__main__":
     main()

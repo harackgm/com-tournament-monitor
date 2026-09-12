@@ -12,7 +12,7 @@ import xml.etree.ElementTree as ET
 # 安全制御・環境変数設定
 # ==========================================
 LINE_CHANNEL_ACCESS_TOKEN = os.environ.get("LINE_CHANNEL_ACCESS_TOKEN", "")
-# ※本番用では LINE_USER_ID は使用しません
+LINE_USER_ID = os.environ.get("LINE_USER_ID", "")  # テスト用に復活
 
 DB_PATH = "tournaments.db"
 MAX_NOTIFY_LIMIT = 5  # 大量通知ストッパー
@@ -194,7 +194,7 @@ def init_db():
     return conn, is_initial_setup
 
 def get_theme_color(location_name):
-    if any(kw in location_name for kw in ["栃木", "群馬", "キングフィッシャー", "上永野", "みどり", "なら山", "大芦", "増井", "宇都宮", "アメイズ", "中之沢", "赤城", "川場", "沼田", "宮城", "ベリーズ", "イワナ"]):
+    if any(kw in location_name for kw in ["栃木", "群群馬", "キングフィッシャー", "上永野", "みどり", "なら山", "大芦", "増井", "宇都宮", "アメイズ", "中之沢", "赤城", "川場", "沼田", "宮城", "ベリーズ", "イワナ"]):
         return "#03A9F4"  
     elif any(kw in location_name for kw in ["千葉", "茨城", "ジョイバレー", "けんた", "千葉川すそ", "座間", "高萩", "エリアJ"]):
         return "#FF5722"  
@@ -371,7 +371,8 @@ def normalize_youtube_url(url_str):
     if embed_match: return f"https://www.youtube.com/watch?v={embed_match.group(1)}"
     return url_str
 
-def extract_videos_from_html(html_content):
+# ★動画抽出部分の強化（公開予定日時の取得機能を追加）
+def extract_videos_from_html(html_content, url_year):
     videos = {}
     if not html_content: return videos
     soup = BeautifulSoup(html_content, "html.parser")
@@ -381,9 +382,10 @@ def extract_videos_from_html(html_content):
     exclude_kws = ["準決勝", "予選", "セミファイナル", "3位決定戦", "三位決定戦", "準々決勝", "semi"]
 
     for i, tag in enumerate(headings):
-        text = tag.get_text(strip=True).lower()
-        is_interview = any(kw in text for kw in interview_kws)
-        is_final = any(kw in text for kw in final_kws) and not any(kw in text for kw in exclude_kws)
+        text = tag.get_text(strip=True)
+        text_lower = text.lower()
+        is_interview = any(kw in text_lower for kw in interview_kws)
+        is_final = any(kw in text_lower for kw in final_kws) and not any(kw in text_lower for kw in exclude_kws)
         
         if is_interview or is_final:
             block_elements = []
@@ -405,10 +407,34 @@ def extract_videos_from_html(html_content):
                     if 'youtube.com' in target_str or 'youtu.be' in target_str:
                         vid_url = a_tag.get('href', '') or a_tag.get('title', '')
                         break
+            
             if vid_url:
                 normalized_url = normalize_youtube_url(vid_url)
-                if is_interview and "interview" not in videos: videos["interview"] = {"title": tag.get_text(strip=True), "url": normalized_url}
-                if is_final and "final" not in videos: videos["final"] = {"title": tag.get_text(strip=True), "url": normalized_url}
+                
+                # 見出しから公開予定日時（月/日 時間）を自動抽出
+                publish_dt = None
+                match_time = re.search(r"(\d{1,2})[/月](\d{1,2})[日\s]*(\d{1,2})[:時](\d{2})", text)
+                if match_time:
+                    try:
+                        m = int(match_time.group(1))
+                        d = int(match_time.group(2))
+                        hh = int(match_time.group(3))
+                        mm = int(match_time.group(4))
+                        # 大会開催年ベースで日付を組み立てる（年越しの簡単な補正も含む）
+                        pub_year = url_year
+                        if m < 3 and datetime.now().month >= 11:
+                            pub_year += 1
+                        elif m > 10 and datetime.now().month <= 2:
+                            pub_year -= 1
+                            
+                        publish_dt = datetime(pub_year, m, d, hh, mm)
+                    except ValueError:
+                        pass
+
+                video_info = {"title": text, "url": normalized_url, "publish_dt": publish_dt}
+                
+                if is_interview and "interview" not in videos: videos["interview"] = video_info
+                if is_final and "final" not in videos: videos["final"] = video_info
     return videos
 
 def extract_entry_conditions(soup):
@@ -456,10 +482,10 @@ def fetch_page_data(url):
 # ==========================================
 # LINE Push Message (Flex Message カルーセル)
 # ==========================================
-# ★ 本番用：一斉送信（broadcast）仕様 ★
+# ★ テスト用：個別送信（push）仕様 ★
 def send_line_flex(header_title, round_num, location, event_date_str, entry_str, page_url, theme_color, extra_info=None):
-    if not LINE_CHANNEL_ACCESS_TOKEN: return
-    url = "https://api.line.me/v2/bot/message/broadcast"
+    if not LINE_CHANNEL_ACCESS_TOKEN or not LINE_USER_ID: return
+    url = "https://api.line.me/v2/bot/message/push"
     headers = {"Content-Type": "application/json", "Authorization": f"Bearer {LINE_CHANNEL_ACCESS_TOKEN}"}
     
     is_cc = "/cc" in page_url
@@ -537,13 +563,13 @@ def send_line_flex(header_title, round_num, location, event_date_str, entry_str,
                 ]
             })
 
-    flex_payload = {"messages": [{"type": "flex", "altText": f"【{header_title}】{title_main} {title_sub}", "contents": {"type": "carousel", "contents": [{"type": "bubble", "header": {"type": "box", "layout": "vertical", "backgroundColor": theme_color, "contents": [{"type": "text", "text": f"🎣 {header_title}", "color": "#FFFFFF", "weight": "bold", "size": "xs"}]}, "body": {"type": "box", "layout": "vertical", "spacing": "md", "contents": body_contents}, "footer": {"type": "box", "layout": "vertical", "contents": [{"type": "button", "action": {"type": "uri", "label": "🔗 詳細・エントリー", "uri": page_url}, "style": "primary", "color": theme_color}]}}]}}]}
+    flex_payload = {"to": LINE_USER_ID, "messages": [{"type": "flex", "altText": f"【{header_title}】{title_main} {title_sub}", "contents": {"type": "carousel", "contents": [{"type": "bubble", "header": {"type": "box", "layout": "vertical", "backgroundColor": theme_color, "contents": [{"type": "text", "text": f"🎣 {header_title}", "color": "#FFFFFF", "weight": "bold", "size": "xs"}]}, "body": {"type": "box", "layout": "vertical", "spacing": "md", "contents": body_contents}, "footer": {"type": "box", "layout": "vertical", "contents": [{"type": "button", "action": {"type": "uri", "label": "🔗 詳細・エントリー", "uri": page_url}, "style": "primary", "color": theme_color}]}}]}}]}
     try: requests.post(url, headers=headers, json=flex_payload, timeout=TIMEOUT_SEC)
     except Exception: pass
 
 def send_result_line_flex(header_title, round_num, location, results, page_url, theme_color):
-    if not LINE_CHANNEL_ACCESS_TOKEN: return
-    url = "https://api.line.me/v2/bot/message/broadcast"
+    if not LINE_CHANNEL_ACCESS_TOKEN or not LINE_USER_ID: return
+    url = "https://api.line.me/v2/bot/message/push"
     headers = {"Content-Type": "application/json", "Authorization": f"Bearer {LINE_CHANNEL_ACCESS_TOKEN}"}
     
     is_cc = "/cc" in page_url
@@ -601,12 +627,12 @@ def send_result_line_flex(header_title, round_num, location, results, page_url, 
         bubbles.append(bubble)
     
     if bubbles:
-        try: requests.post(url, headers=headers, json={"messages": [{"type": "flex", "altText": f"【大会結果】{title_text_str}", "contents": {"type": "carousel", "contents": bubbles}}]}, timeout=TIMEOUT_SEC)
+        try: requests.post(url, headers=headers, json={"to": LINE_USER_ID, "messages": [{"type": "flex", "altText": f"【大会結果】{title_text_str}", "contents": {"type": "carousel", "contents": bubbles}}]}, timeout=TIMEOUT_SEC)
         except Exception: pass
 
 def send_video_line_flex(header_title, round_num, location, video_data, page_url, theme_color, main_image_url=None):
-    if not LINE_CHANNEL_ACCESS_TOKEN: return
-    url = "https://api.line.me/v2/bot/message/broadcast"
+    if not LINE_CHANNEL_ACCESS_TOKEN or not LINE_USER_ID: return
+    url = "https://api.line.me/v2/bot/message/push"
     headers = {"Content-Type": "application/json", "Authorization": f"Bearer {LINE_CHANNEL_ACCESS_TOKEN}"}
     
     is_cc = "/cc" in page_url
@@ -641,17 +667,18 @@ def send_video_line_flex(header_title, round_num, location, video_data, page_url
         }
 
     flex_payload = {
+        "to": LINE_USER_ID,
         "messages": [{"type": "flex", "altText": f"{header_title} {title_main} {title_sub}", "contents": bubble}]
     }
     try: requests.post(url, headers=headers, json=flex_payload, timeout=TIMEOUT_SEC)
     except Exception: pass
 
 # ==========================================
-# メイン監視処理（一般公開・本番運用モード）
+# メイン監視処理（一般公開・テスト運用モード）
 # ==========================================
 def main():
     now = get_jst_now()
-    print(f"[{now.strftime('%Y-%m-%d %H:%M:%S')}] 全自動監視処理（本番運用モード）を開始します。")
+    print(f"[{now.strftime('%Y-%m-%d %H:%M:%S')}] 全自動監視処理（テスト運用モード）を開始します。")
     
     conn, is_initial_setup = init_db()
     c = conn.cursor()
@@ -788,7 +815,9 @@ def main():
                 extra_info_dict["entry_condition"] = f"[{active_entry_idx}次対象者]\n{conditions_dict[active_entry_idx]}"
 
             results_data = extract_tournament_results_from_html(combined_html)
-            videos_data = extract_videos_from_html(combined_html)
+            
+            # ★ 修正箇所：動画の公開予定日時の抽出を強化
+            videos_data = extract_videos_from_html(combined_html, url_year)
 
             winner_name = ""
             for r in results_data:
@@ -824,22 +853,39 @@ def main():
                 if winner_name and db_winner != winner_name:
                     c.execute("UPDATE tournaments SET winner_name = ? WHERE url = ?", (winner_name, url))
                 
-                # --- 動画公開の判定 ---
+                # ==========================================
+                # ★ 動画公開の待機・通知ロジック
+                # ==========================================
                 is_final_available = False
                 if "final" in videos_data:
                     if n_video_fin == 1:
                         is_final_available = True
-                    elif is_youtube_video_available(videos_data["final"]["url"]):
-                        is_final_available = True
-                        if not is_night_mode:
-                            notify_queue.append({"type": "video", "header": "🎥【決勝戦 動画公開】", "round_num": round_num, "location": location, "video_data": videos_data["final"], "url": url, "theme_color": theme_color, "main_image_url": main_image_url})
-                            db_updates.append(("UPDATE tournaments SET notified_video_final = 1 WHERE url = ?", (url,)))
+                    else:
+                        video = videos_data["final"]
+                        pub_dt = video.get("publish_dt")
+                        
+                        # 指定時間が未来なら通知を保留
+                        if pub_dt and pub_dt > now:
+                            print(f"⏳ 決勝戦動画は公開予定時刻前です ({pub_dt.strftime('%m/%d %H:%M')}): {url}")
+                        else:
+                            # 時間が過ぎた、または時間の記載がない場合は通常判定
+                            if is_youtube_video_available(video["url"]):
+                                is_final_available = True
+                                if not is_night_mode:
+                                    notify_queue.append({"type": "video", "header": "🎥【決勝戦 動画公開】", "round_num": round_num, "location": location, "video_data": video, "url": url, "theme_color": theme_color, "main_image_url": main_image_url})
+                                    db_updates.append(("UPDATE tournaments SET notified_video_final = 1 WHERE url = ?", (url,)))
                 
                 if "interview" in videos_data and n_video_int == 0:
-                    if is_youtube_video_available(videos_data["interview"]["url"]):
-                        if not is_night_mode:
-                            notify_queue.append({"type": "video", "header": "🎤【優勝者インタビュー公開】", "round_num": round_num, "location": location, "video_data": videos_data["interview"], "url": url, "theme_color": theme_color, "main_image_url": main_image_url})
-                            db_updates.append(("UPDATE tournaments SET notified_video_interview = 1 WHERE url = ?", (url,)))
+                    video = videos_data["interview"]
+                    pub_dt = video.get("publish_dt")
+                    
+                    if pub_dt and pub_dt > now:
+                        print(f"⏳ インタビュー動画は公開予定時刻前です ({pub_dt.strftime('%m/%d %H:%M')}): {url}")
+                    else:
+                        if is_youtube_video_available(video["url"]):
+                            if not is_night_mode:
+                                notify_queue.append({"type": "video", "header": "🎤【優勝者インタビュー公開】", "round_num": round_num, "location": location, "video_data": video, "url": url, "theme_color": theme_color, "main_image_url": main_image_url})
+                                db_updates.append(("UPDATE tournaments SET notified_video_interview = 1 WHERE url = ?", (url,)))
                 
                 # ★二段階結果通知ロジック（STEP1: 速報 ➔ STEP2: 写真追加・48h・動画連動）
                 if results_data:

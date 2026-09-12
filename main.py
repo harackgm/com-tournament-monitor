@@ -371,7 +371,6 @@ def normalize_youtube_url(url_str):
     if embed_match: return f"https://www.youtube.com/watch?v={embed_match.group(1)}"
     return url_str
 
-# ★動画抽出部分の強化（公開予定日時の取得機能を追加）
 def extract_videos_from_html(html_content, url_year):
     videos = {}
     if not html_content: return videos
@@ -725,10 +724,10 @@ def main():
             match_year = re.search(r"/at/(\d{4})_", url)
             url_year = int(match_year.group(1)) if match_year else current_year
 
-            time.sleep(0.5)
+            time.sleep(1.0)
             text_p1, html_p1, title_p1, lines_p1 = fetch_page_data(url)
             sub_url = url.rstrip("/") + "/2/"
-            time.sleep(0.5)
+            time.sleep(1.0)
             text_p2, html_p2, title_p2, lines_p2 = fetch_page_data(sub_url)
 
             combined_text = (text_p2 + " " + text_p1).strip()
@@ -814,8 +813,6 @@ def main():
                 extra_info_dict["entry_condition"] = f"[{active_entry_idx}次対象者]\n{conditions_dict[active_entry_idx]}"
 
             results_data = extract_tournament_results_from_html(combined_html)
-            
-            # ★ 更新：動画の公開予定日時の抽出機能を強化
             videos_data = extract_videos_from_html(combined_html, url_year)
 
             winner_name = ""
@@ -863,11 +860,9 @@ def main():
                         video = videos_data["final"]
                         pub_dt = video.get("publish_dt")
                         
-                        # 指定時間が未来なら通知を保留
                         if pub_dt and pub_dt > now:
                             print(f"⏳ 決勝戦動画は公開予定時刻前です ({pub_dt.strftime('%m/%d %H:%M')}): {url}")
                         else:
-                            # 時間が過ぎた、または時間の記載がない場合は通常判定
                             if is_youtube_video_available(video["url"]):
                                 is_final_available = True
                                 if not is_night_mode:
@@ -886,7 +881,9 @@ def main():
                                 notify_queue.append({"type": "video", "header": "🎤【優勝者インタビュー公開】", "round_num": round_num, "location": location, "video_data": video, "url": url, "theme_color": theme_color, "main_image_url": main_image_url})
                                 db_updates.append(("UPDATE tournaments SET notified_video_interview = 1 WHERE url = ?", (url,)))
                 
-                # ★二段階結果通知ロジック（STEP1: 速報 ➔ STEP2: 写真追加・48h・動画連動）
+                # ==========================================
+                # ★ 二段階結果通知ロジック
+                # ==========================================
                 if results_data:
                     main_results = [r for r in results_data if r['rank'] in ['優勝', '２位', '３位']]
                     
@@ -908,7 +905,7 @@ def main():
                         detected_dt = datetime.strptime(db_result_detected_at, "%Y-%m-%d %H:%M:%S")
                         hours_since_detected = (now - detected_dt).total_seconds() / 3600
                         
-                        is_images_complete = all(r.get('image_url') for r in main_results)
+                        is_images_complete = len(main_results) > 0 and all(r.get('image_url') for r in main_results)
                         
                         should_notify_photo = False
                         if is_images_complete:
@@ -992,7 +989,8 @@ def main():
                         notify_queue.append({"type": "info", "header": "📅【明日大会開催！直前案内】", "round_num": round_num, "location": location, "event_date_str": event_date_str, "entry_str": entry_str, "url": url, "theme_color": theme_color, "extra_info": evt_extra})
                         db_updates.append(("UPDATE tournaments SET notified_event_1d = 1 WHERE url = ?", (url,)))
 
-        except Exception as e: pass
+        except Exception as e:
+            print(f"⚠️ 予期せぬエラーが発生しました (URL: {url}): {e}")
 
     unique_notify_queue = []
     seen = set()

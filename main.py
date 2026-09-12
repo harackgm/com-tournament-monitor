@@ -125,8 +125,9 @@ def send_line_flex(header_title, round_num, location, event_date_str, entry_str,
             "type": "image",
             "url": main_image_url,
             "size": "full",
-            "aspectRatio": "20:13",
-            "aspectMode": "cover"
+            "aspectRatio": "16:9",
+            "aspectMode": "fit",
+            "backgroundColor": "#FFFFFF"
         }
 
     flex_payload = {"to": LINE_USER_ID, "messages": [{"type": "flex", "altText": f"【{header_title}】{title_main} {title_sub}", "contents": {"type": "carousel", "contents": [bubble]}}]}
@@ -146,6 +147,10 @@ def send_result_line_flex(header_title, round_num, location, results, page_url, 
         rank = res['rank']
         name = res['name']
         img_url = res.get('image_url')
+        
+        if img_url:
+            img_url = re.sub(r'-\d+x\d+(?=\.[a-zA-Z]+$)', '', img_url)
+
         bg_color = theme_color
         
         is_winner = False
@@ -189,7 +194,7 @@ def send_result_line_flex(header_title, round_num, location, results, page_url, 
             "footer": {"type": "box", "layout": "vertical", "contents": [{"type": "button", "action": {"type": "uri", "label": "🔗 結果詳細を見る", "uri": target_url}, "style": "primary", "color": bg_color}]}
         }
         if img_url:
-            bubble["hero"] = {"type": "image", "url": img_url, "size": "full", "aspectRatio": "3:4", "aspectMode": "fit", "backgroundColor": "#FFFFFF"}
+            bubble["hero"] = {"type": "image", "url": img_url, "size": "full", "aspectRatio": "4:3", "aspectMode": "fit", "backgroundColor": "#FFFFFF"}
         bubbles.append(bubble)
     
     if bubbles:

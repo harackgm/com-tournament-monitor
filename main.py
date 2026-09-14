@@ -60,6 +60,21 @@ def fetch_url(url, retries=3):
             if i == retries - 1: return None
             time.sleep(2)
 
+def fetch_page_data(url):
+    res = fetch_url(url)
+    if res and res.status_code == 200:
+        try:
+            soup = BeautifulSoup(res.text, "html.parser")
+            h1_tag = soup.find('h1', class_='entry-title')
+            title_text = h1_tag.get_text(strip=True) if h1_tag else ""
+            content_area = soup.find("div", class_="entry-content") or soup
+            
+            text_space = content_area.get_text(separator=" ", strip=True)
+            text_lines = [line.strip() for line in content_area.get_text(separator="\n", strip=True).split("\n") if line.strip()]
+            return text_space, res.text, title_text, text_lines
+        except Exception: pass
+    return "", "", "", []
+
 def is_youtube_video_available(youtube_url):
     if not youtube_url: return False
     res = fetch_url(youtube_url)
@@ -170,7 +185,7 @@ def init_db():
     return conn, is_initial_setup
 
 def get_theme_color(location_name):
-    if any(kw in location_name for kw in ["栃木", "群群馬", "キングフィッシャー", "上永野", "みどり", "なら山", "大芦", "増井", "宇都宮", "アメイズ", "中之沢", "赤城", "川場", "沼田", "宮城", "ベリーズ", "イワナ"]): return "#03A9F4"  
+    if any(kw in location_name for kw in ["栃木", "群馬", "キングフィッシャー", "上永野", "みどり", "なら山", "大芦", "増井", "宇都宮", "アメイズ", "中之沢", "赤城", "川場", "沼田", "宮城", "ベリーズ", "イワナ"]): return "#03A9F4"  
     elif any(kw in location_name for kw in ["千葉", "茨城", "ジョイバレー", "けんた", "千葉川すそ", "座間", "高萩", "エリアJ"]): return "#FF5722"  
     elif any(kw in location_name for kw in ["埼玉", "朝霞", "吉羽園", "しらこばと", "川越"]): return "#E91E63"  
     elif any(kw in location_name for kw in ["神奈川", "上浜", "王禅寺", "開成", "足柄", "ベリーパーク"]): return "#9C27B0"  
@@ -388,7 +403,6 @@ def normalize_youtube_url(url_str):
     if embed_match: return f"https://www.youtube.com/watch?v={embed_match.group(1)}"
     return url_str
 
-# ★ 修正: DOMツリーを安全に辿り、確実に動画URLと公開予定時刻を抽出する
 def extract_videos_from_html(html_content, url_year):
     videos = {}
     if not html_content: return videos
@@ -408,7 +422,6 @@ def extract_videos_from_html(html_content, url_year):
             vid_url = None
             nxt = tag.find_next_sibling()
             
-            # 次の見出しが現れるまでの間で動画リンクを探す
             while nxt and nxt.name not in ['h2', 'h3', 'h4']:
                 if nxt.name == 'iframe':
                     src = nxt.get('src', '')
@@ -482,7 +495,7 @@ def extract_entry_conditions(soup):
 # ==========================================
 # LINE Push Message (Flex Message カルーセル)
 # ==========================================
-# ★ テスト配信用：個別送信（push）仕様 ★
+# ★ テスト用送信
 def send_line_flex(header_title, round_num, location, event_date_str, entry_str, page_url, theme_color, extra_info=None, main_image_url=None):
     if not LINE_CHANNEL_ACCESS_TOKEN or not LINE_USER_ID: return
     url = "https://api.line.me/v2/bot/message/push"
@@ -665,7 +678,7 @@ def send_video_line_flex(header_title, round_num, location, video_data, page_url
     except Exception: pass
 
 # ==========================================
-# メイン監視処理（テスト環境用：送信先を強制変更）
+# メイン監視処理（テスト運用モード）
 # ==========================================
 def main():
     now = get_jst_now()

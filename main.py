@@ -12,7 +12,7 @@ import xml.etree.ElementTree as ET
 # 安全制御・環境変数設定
 # ==========================================
 LINE_CHANNEL_ACCESS_TOKEN = os.environ.get("LINE_CHANNEL_ACCESS_TOKEN", "")
-LINE_USER_ID = os.environ.get("LINE_USER_ID", "")  # ★ テスト配信用に復活
+LINE_USER_ID = os.environ.get("LINE_USER_ID", "")  # ★ テスト配信用
 
 DB_PATH = "tournaments.db"
 TIMEOUT_SEC = 10  # 通信タイムアウト時間(10秒)
@@ -146,38 +146,6 @@ def get_theme_color(location_name):
 # ==========================================
 # テキスト解析ヘルパー関数群
 # ==========================================
-def extract_landscape_image(html_p1, html_p2):
-    target_html = html_p2 if html_p2 else html_p1
-    if not target_html: return None
-    soup = BeautifulSoup(target_html, "html.parser")
-    content_area = soup.find("div", class_="entry-content")
-    if not content_area: return None
-    
-    for img in content_area.find_all('img'):
-        src = img.get('src')
-        if not src: continue
-        alt = img.get('alt', '')
-        if "優勝" in alt or "表彰台" in alt: continue
-        width = img.get('width')
-        height = img.get('height')
-        if width and height:
-            try:
-                w = int(re.sub(r'\D', '', str(width)))
-                h = int(re.sub(r'\D', '', str(height)))
-                if w > h:
-                    if src.startswith('/'): src = "https://www.kanritsuriba.com" + src
-                    return re.sub(r'-\d+x\d+(?=\.[a-zA-Z]+$)', '', src)
-            except ValueError: pass
-                
-    for img in content_area.find_all('img'):
-        src = img.get('src')
-        if not src: continue
-        alt = img.get('alt', '')
-        if "優勝" in alt or "表彰台" in alt: continue
-        if src.startswith('/'): src = "https://www.kanritsuriba.com" + src
-        return re.sub(r'-\d+x\d+(?=\.[a-zA-Z]+$)', '', src)
-    return None
-
 def extract_podium_image(html_content):
     if not html_content: return None
     soup = BeautifulSoup(html_content, "html.parser")
@@ -259,9 +227,12 @@ def extract_tournament_results_from_html(html_content):
                 nxt = nxt.find_next_sibling()
                 count += 1
                 
-            # ★ 修正: 見出しの記号（括弧など）を分離し、名前が含まれる安全なフレーズのみを抽出
-            parts = re.split(r'[\[\]\s ]', exact_heading)
-            safe_target = next((p for p in parts if name in p), exact_heading)
+            # ★ 修正: ローマ字（英語名）を抽出して完全一致かつ確実に飛ぶ目印にする
+            eng_match = re.search(r'[A-Za-z][A-Za-z\s]{3,}$', exact_heading)
+            if eng_match:
+                safe_target = eng_match.group(0).strip()
+            else:
+                safe_target = exact_heading
                 
             existing = next((r for r in results if r['name'] == name), None)
             if existing:
@@ -363,7 +334,7 @@ def send_result_line_flex(header_title, round_num, location, results, page_url, 
 
         jump_target = res.get('jump_target', name or rank)
         separator = "&" if "?" in page_url else "?"
-        # ★ 修正: openExternalBrowser=1 で外部ブラウザを強制起動
+        # ★ openExternalBrowser=1 で外部ブラウザを強制し、URLエンコードした英語名フレーズでジャンプ
         target_url = f"{page_url}{separator}openExternalBrowser=1#:~:text={urllib.parse.quote(jump_target)}"
 
         bubble = {

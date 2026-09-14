@@ -12,7 +12,7 @@ import xml.etree.ElementTree as ET
 # 安全制御・環境変数設定
 # ==========================================
 LINE_CHANNEL_ACCESS_TOKEN = os.environ.get("LINE_CHANNEL_ACCESS_TOKEN", "")
-# ※本番用（一斉送信）のため LINE_USER_ID は使用しません
+LINE_USER_ID = os.environ.get("LINE_USER_ID", "")  # ★ テスト配信用
 
 DB_PATH = "tournaments.db"
 MAX_NOTIFY_LIMIT = 5  # 大量通知ストッパー
@@ -65,7 +65,7 @@ def is_youtube_video_available(youtube_url):
     res = fetch_url(youtube_url)
     if not res or res.status_code != 200: return False
     html = res.text
-    upcoming_keywords = ["isUpcoming", "公開予定", "ライブ配信まで", "プレミア公開"]
+    upcoming_keywords = ["isUpcoming", "公開予定", "ライブ配信まで", "プレミア公開", "Private video", "非公開"]
     for kw in upcoming_keywords:
         if kw in html: return False
     return True
@@ -170,7 +170,7 @@ def init_db():
     return conn, is_initial_setup
 
 def get_theme_color(location_name):
-    if any(kw in location_name for kw in ["栃木", "群馬", "キングフィッシャー", "上永野", "みどり", "なら山", "大芦", "増井", "宇都宮", "アメイズ", "中之沢", "赤城", "川場", "沼田", "宮城", "ベリーズ", "イワナ"]): return "#03A9F4"  
+    if any(kw in location_name for kw in ["栃木", "群群馬", "キングフィッシャー", "上永野", "みどり", "なら山", "大芦", "増井", "宇都宮", "アメイズ", "中之沢", "赤城", "川場", "沼田", "宮城", "ベリーズ", "イワナ"]): return "#03A9F4"  
     elif any(kw in location_name for kw in ["千葉", "茨城", "ジョイバレー", "けんた", "千葉川すそ", "座間", "高萩", "エリアJ"]): return "#FF5722"  
     elif any(kw in location_name for kw in ["埼玉", "朝霞", "吉羽園", "しらこばと", "川越"]): return "#E91E63"  
     elif any(kw in location_name for kw in ["神奈川", "上浜", "王禅寺", "開成", "足柄", "ベリーパーク"]): return "#9C27B0"  
@@ -274,7 +274,6 @@ def extract_tournament_results_from_html(html_content):
     
     rank_pattern = re.compile(r"^(優勝|準優勝|[1-3１-３一二三]位)")
     
-    # <li> タグからの抽出（速報用）
     for li in soup.find_all('li'):
         text = li.get_text(strip=True)
         if "インタビュー" in text or "動画" in text: continue
@@ -303,7 +302,6 @@ def extract_tournament_results_from_html(html_content):
             if not any(r['rank'] == "ラーメン賞" for r in results):
                 results.append({"rank": "ラーメン賞", "name": "", "image_url": src, "jump_target": "ラーメン賞"})
     
-    # <h3> <h4> タグからの抽出（詳細情報の紐付け）
     for tag in soup.find_all(['h3', 'h4']):
         exact_heading = tag.get_text(strip=True)
         if "インタビュー" in exact_heading or "動画" in exact_heading: continue
@@ -335,7 +333,9 @@ def extract_tournament_results_from_html(html_content):
                 nxt = nxt.find_next_sibling()
                 count += 1
                 
-            safe_target = f"{name}選手のタックル"
+            eng_match = re.search(r'[A-Za-z][A-Za-z\s]{3,}$', exact_heading)
+            if eng_match: safe_target = eng_match.group(0).strip()
+            else: safe_target = exact_heading
                 
             existing = next((r for r in results if r['name'] == name), None)
             if existing:
@@ -388,41 +388,49 @@ def normalize_youtube_url(url_str):
     if embed_match: return f"https://www.youtube.com/watch?v={embed_match.group(1)}"
     return url_str
 
+# ★ 修正: DOMツリーを安全に辿り、確実に動画URLと公開予定時刻を抽出する
 def extract_videos_from_html(html_content, url_year):
     videos = {}
     if not html_content: return videos
     soup = BeautifulSoup(html_content, "html.parser")
-    headings = soup.find_all(['h2', 'h3', 'h4'])
+    
     interview_kws = ["インタビュー", "優勝者の声", "コメント", "ヒーロー", "winner"]
     final_kws = ["決勝", "ファイナル", "優勝決定戦", "final"]
     exclude_kws = ["準決勝", "予選", "セミファイナル", "3位決定戦", "三位決定戦", "準々決勝", "semi"]
 
-    for i, tag in enumerate(headings):
+    for tag in soup.find_all(['h2', 'h3', 'h4']):
         text = tag.get_text(strip=True)
         text_lower = text.lower()
         is_interview = any(kw in text_lower for kw in interview_kws)
         is_final = any(kw in text_lower for kw in final_kws) and not any(kw in text_lower for kw in exclude_kws)
         
         if is_interview or is_final:
-            block_elements = []
-            curr = tag.next_element
-            while curr and curr != (headings[i+1] if i+1 < len(headings) else None):
-                block_elements.append(curr)
-                curr = curr.next_element
-            block_soup = BeautifulSoup("".join([str(e) for e in block_elements]), "html.parser")
-            
             vid_url = None
-            for iframe in block_soup.find_all('iframe'):
-                src = iframe.get('src', '')
-                if 'youtube' in src or 'youtu.be' in src:
-                    vid_url = src
-                    break
-            if not vid_url:
-                for a_tag in block_soup.find_all('a'):
-                    target_str = f"{a_tag.get('href', '')} {a_tag.get('title', '')} {a_tag.get_text()}"
-                    if 'youtube.com' in target_str or 'youtu.be' in target_str:
-                        vid_url = a_tag.get('href', '') or a_tag.get('title', '')
-                        break
+            nxt = tag.find_next_sibling()
+            
+            # 次の見出しが現れるまでの間で動画リンクを探す
+            while nxt and nxt.name not in ['h2', 'h3', 'h4']:
+                if nxt.name == 'iframe':
+                    src = nxt.get('src', '')
+                    if 'youtube' in src or 'youtu.be' in src: vid_url = src
+                else:
+                    iframe = nxt.find('iframe') if hasattr(nxt, 'find') else None
+                    if iframe:
+                        src = iframe.get('src', '')
+                        if 'youtube' in src or 'youtu.be' in src: vid_url = src
+                
+                if not vid_url:
+                    if nxt.name == 'a':
+                        target_str = f"{nxt.get('href', '')} {nxt.get('title', '')} {nxt.get_text()}"
+                        if 'youtube.com' in target_str or 'youtu.be' in target_str: vid_url = nxt.get('href', '') or nxt.get('title', '')
+                    else:
+                        for a_tag in (nxt.find_all('a') if hasattr(nxt, 'find_all') else []):
+                            target_str = f"{a_tag.get('href', '')} {a_tag.get('title', '')} {a_tag.get_text()}"
+                            if 'youtube.com' in target_str or 'youtu.be' in target_str:
+                                vid_url = a_tag.get('href', '') or a_tag.get('title', '')
+                                break
+                if vid_url: break
+                nxt = nxt.find_next_sibling()
             
             if vid_url:
                 normalized_url = normalize_youtube_url(vid_url)
@@ -474,10 +482,10 @@ def extract_entry_conditions(soup):
 # ==========================================
 # LINE Push Message (Flex Message カルーセル)
 # ==========================================
-# ★ 本番用：一斉送信（broadcast）仕様 ★
+# ★ テスト配信用：個別送信（push）仕様 ★
 def send_line_flex(header_title, round_num, location, event_date_str, entry_str, page_url, theme_color, extra_info=None, main_image_url=None):
-    if not LINE_CHANNEL_ACCESS_TOKEN: return
-    url = "https://api.line.me/v2/bot/message/broadcast"
+    if not LINE_CHANNEL_ACCESS_TOKEN or not LINE_USER_ID: return
+    url = "https://api.line.me/v2/bot/message/push"
     headers = {"Content-Type": "application/json", "Authorization": f"Bearer {LINE_CHANNEL_ACCESS_TOKEN}"}
     
     is_cc = "/cc" in page_url
@@ -544,13 +552,13 @@ def send_line_flex(header_title, round_num, location, event_date_str, entry_str,
             "aspectMode": "cover"
         }
 
-    flex_payload = {"messages": [{"type": "flex", "altText": f"【{header_title}】{title_main} {title_sub}", "contents": {"type": "carousel", "contents": [bubble]}}]}
+    flex_payload = {"to": LINE_USER_ID, "messages": [{"type": "flex", "altText": f"【{header_title}】{title_main} {title_sub}", "contents": {"type": "carousel", "contents": [bubble]}}]}
     try: requests.post(url, headers=headers, json=flex_payload, timeout=TIMEOUT_SEC)
     except Exception: pass
 
 def send_result_line_flex(header_title, round_num, location, results, page_url, theme_color):
-    if not LINE_CHANNEL_ACCESS_TOKEN: return
-    url = "https://api.line.me/v2/bot/message/broadcast"
+    if not LINE_CHANNEL_ACCESS_TOKEN or not LINE_USER_ID: return
+    url = "https://api.line.me/v2/bot/message/push"
     headers = {"Content-Type": "application/json", "Authorization": f"Bearer {LINE_CHANNEL_ACCESS_TOKEN}"}
     
     is_cc = "/cc" in page_url
@@ -599,8 +607,8 @@ def send_result_line_flex(header_title, round_num, location, results, page_url, 
             body_contents.append({"type": "text", "text": res['congrat_msg'], "size": "xs", "color": "#D32F2F", "weight": "bold", "margin": "md", "wrap": True})
 
         jump_target = res.get('jump_target', name or rank)
-        # ★ 修正: PCブラウザでもリダイレクトされずに正しくジャンプするよう、純粋なフラグメントのみを付与
-        target_url = f"{page_url}#:~:text={urllib.parse.quote(jump_target)}"
+        separator = "&" if "?" in page_url else "?"
+        target_url = f"{page_url}{separator}openExternalBrowser=1#:~:text={urllib.parse.quote(jump_target)}"
 
         bubble = {
             "type": "bubble", 
@@ -614,12 +622,12 @@ def send_result_line_flex(header_title, round_num, location, results, page_url, 
         bubbles.append(bubble)
     
     if bubbles:
-        try: requests.post(url, headers=headers, json={"messages": [{"type": "flex", "altText": f"【大会結果】{title_text_str}", "contents": {"type": "carousel", "contents": bubbles}}]}, timeout=TIMEOUT_SEC)
+        try: requests.post(url, headers=headers, json={"to": LINE_USER_ID, "messages": [{"type": "flex", "altText": f"【大会結果】{title_text_str}", "contents": {"type": "carousel", "contents": bubbles}}]}, timeout=TIMEOUT_SEC)
         except Exception: pass
 
 def send_video_line_flex(header_title, round_num, location, video_data, page_url, theme_color, main_image_url=None):
-    if not LINE_CHANNEL_ACCESS_TOKEN: return
-    url = "https://api.line.me/v2/bot/message/broadcast"
+    if not LINE_CHANNEL_ACCESS_TOKEN or not LINE_USER_ID: return
+    url = "https://api.line.me/v2/bot/message/push"
     headers = {"Content-Type": "application/json", "Authorization": f"Bearer {LINE_CHANNEL_ACCESS_TOKEN}"}
     
     is_cc = "/cc" in page_url
@@ -652,19 +660,23 @@ def send_video_line_flex(header_title, round_num, location, video_data, page_url
             "aspectMode": "cover"
         }
 
-    flex_payload = {"messages": [{"type": "flex", "altText": f"{header_title} {title_main} {title_sub}", "contents": bubble}]}
+    flex_payload = {"to": LINE_USER_ID, "messages": [{"type": "flex", "altText": f"{header_title} {title_main} {title_sub}", "contents": bubble}]}
     try: requests.post(url, headers=headers, json=flex_payload, timeout=TIMEOUT_SEC)
     except Exception: pass
 
 # ==========================================
-# メイン監視処理（本番運用モード）
+# メイン監視処理（テスト環境用：送信先を強制変更）
 # ==========================================
 def main():
     now = get_jst_now()
-    print(f"[{now.strftime('%Y-%m-%d %H:%M:%S')}] 全自動監視処理（本番運用モード）を開始します。")
+    print(f"[{now.strftime('%Y-%m-%d %H:%M:%S')}] 全自動監視処理（テスト運用モード）を開始します。")
     
     conn, is_initial_setup = init_db()
     c = conn.cursor()
+
+    # ★ 安全対策：今回のテスト通知を確実に送るため、シルフ大会のインタビュー通知フラグだけを一時的に未通知に戻します
+    c.execute("UPDATE tournaments SET notified_video_interview = 0 WHERE url LIKE '%2026_21%'")
+    conn.commit()
 
     current_year = now.year
     is_night_mode = (now.hour >= NIGHT_MODE_START or now.hour < NIGHT_MODE_END)
@@ -833,7 +845,7 @@ def main():
                     c.execute("UPDATE tournaments SET winner_name = ? WHERE url = ?", (winner_name, url))
                 
                 # ==========================================
-                # ★ 動画公開の待機・通知ロジック
+                # ★ 動画公開の待機・通知ロジック (YouTube Bot対策版)
                 # ==========================================
                 is_final_available = False
                 if "final" in videos_data:
@@ -842,7 +854,12 @@ def main():
                     else:
                         video = videos_data["final"]
                         pub_dt = video.get("publish_dt")
-                        if pub_dt and pub_dt > now: pass
+                        if pub_dt:
+                            if pub_dt <= now:
+                                is_final_available = True
+                                if not is_night_mode:
+                                    notify_queue.append({"type": "video", "header": "🎥【決勝戦 動画公開】", "round_num": round_num, "location": location, "video_data": video, "url": url, "theme_color": theme_color, "main_image_url": main_image_url})
+                                    db_updates.append(("UPDATE tournaments SET notified_video_final = 1 WHERE url = ?", (url,)))
                         else:
                             if is_youtube_video_available(video["url"]):
                                 is_final_available = True
@@ -853,7 +870,12 @@ def main():
                 if "interview" in videos_data and n_video_int == 0:
                     video = videos_data["interview"]
                     pub_dt = video.get("publish_dt")
-                    if pub_dt and pub_dt > now: pass
+                    # ★ 修正: 公開予定時間を過ぎていれば、YouTubeにアクセスせずに無条件で「公開」と判定して通知する
+                    if pub_dt:
+                        if pub_dt <= now:
+                            if not is_night_mode:
+                                notify_queue.append({"type": "video", "header": "🎤【優勝者インタビュー公開】", "round_num": round_num, "location": location, "video_data": video, "url": url, "theme_color": theme_color, "main_image_url": main_image_url})
+                                db_updates.append(("UPDATE tournaments SET notified_video_interview = 1 WHERE url = ?", (url,)))
                     else:
                         if is_youtube_video_available(video["url"]):
                             if not is_night_mode:

@@ -12,7 +12,7 @@ import xml.etree.ElementTree as ET
 # 安全制御・環境変数設定
 # ==========================================
 LINE_CHANNEL_ACCESS_TOKEN = os.environ.get("LINE_CHANNEL_ACCESS_TOKEN", "")
-LINE_USER_ID = os.environ.get("LINE_USER_ID", "")  # ★ テスト配信用
+# ※本番用（一斉送信）のため LINE_USER_ID は使用しません
 
 DB_PATH = "tournaments.db"
 MAX_NOTIFY_LIMIT = 5  # 大量通知ストッパー
@@ -59,6 +59,21 @@ def fetch_url(url, retries=3):
         except Exception:
             if i == retries - 1: return None
             time.sleep(2)
+
+def fetch_page_data(url):
+    res = fetch_url(url)
+    if res and res.status_code == 200:
+        try:
+            soup = BeautifulSoup(res.text, "html.parser")
+            h1_tag = soup.find('h1', class_='entry-title')
+            title_text = h1_tag.get_text(strip=True) if h1_tag else ""
+            content_area = soup.find("div", class_="entry-content") or soup
+            
+            text_space = content_area.get_text(separator=" ", strip=True)
+            text_lines = [line.strip() for line in content_area.get_text(separator="\n", strip=True).split("\n") if line.strip()]
+            return text_space, res.text, title_text, text_lines
+        except Exception: pass
+    return "", "", "", []
 
 # ★ 強化: YouTubeの公式機能(oEmbed)を使って、Bot弾きを回避しつつ確実な公開状態を判定する
 def is_youtube_video_available(youtube_url):
@@ -503,10 +518,10 @@ def extract_entry_conditions(soup):
 # ==========================================
 # LINE Push Message (Flex Message カルーセル)
 # ==========================================
-# ★ テスト用送信
+# ★ 本番用：一斉送信（broadcast）仕様 ★
 def send_line_flex(header_title, round_num, location, event_date_str, entry_str, page_url, theme_color, extra_info=None, main_image_url=None):
-    if not LINE_CHANNEL_ACCESS_TOKEN or not LINE_USER_ID: return
-    url = "https://api.line.me/v2/bot/message/push"
+    if not LINE_CHANNEL_ACCESS_TOKEN: return
+    url = "https://api.line.me/v2/bot/message/broadcast"
     headers = {"Content-Type": "application/json", "Authorization": f"Bearer {LINE_CHANNEL_ACCESS_TOKEN}"}
     
     is_cc = "/cc" in page_url
@@ -573,13 +588,13 @@ def send_line_flex(header_title, round_num, location, event_date_str, entry_str,
             "aspectMode": "cover"
         }
 
-    flex_payload = {"to": LINE_USER_ID, "messages": [{"type": "flex", "altText": f"【{header_title}】{title_main} {title_sub}", "contents": {"type": "carousel", "contents": [bubble]}}]}
+    flex_payload = {"messages": [{"type": "flex", "altText": f"【{header_title}】{title_main} {title_sub}", "contents": {"type": "carousel", "contents": [bubble]}}]}
     try: requests.post(url, headers=headers, json=flex_payload, timeout=TIMEOUT_SEC)
     except Exception: pass
 
 def send_result_line_flex(header_title, round_num, location, results, page_url, theme_color):
-    if not LINE_CHANNEL_ACCESS_TOKEN or not LINE_USER_ID: return
-    url = "https://api.line.me/v2/bot/message/push"
+    if not LINE_CHANNEL_ACCESS_TOKEN: return
+    url = "https://api.line.me/v2/bot/message/broadcast"
     headers = {"Content-Type": "application/json", "Authorization": f"Bearer {LINE_CHANNEL_ACCESS_TOKEN}"}
     
     is_cc = "/cc" in page_url
@@ -643,12 +658,12 @@ def send_result_line_flex(header_title, round_num, location, results, page_url, 
         bubbles.append(bubble)
     
     if bubbles:
-        try: requests.post(url, headers=headers, json={"to": LINE_USER_ID, "messages": [{"type": "flex", "altText": f"【大会結果】{title_text_str}", "contents": {"type": "carousel", "contents": bubbles}}]}, timeout=TIMEOUT_SEC)
+        try: requests.post(url, headers=headers, json={"messages": [{"type": "flex", "altText": f"【大会結果】{title_text_str}", "contents": {"type": "carousel", "contents": bubbles}}]}, timeout=TIMEOUT_SEC)
         except Exception: pass
 
 def send_video_line_flex(header_title, round_num, location, video_data, page_url, theme_color, main_image_url=None):
-    if not LINE_CHANNEL_ACCESS_TOKEN or not LINE_USER_ID: return
-    url = "https://api.line.me/v2/bot/message/push"
+    if not LINE_CHANNEL_ACCESS_TOKEN: return
+    url = "https://api.line.me/v2/bot/message/broadcast"
     headers = {"Content-Type": "application/json", "Authorization": f"Bearer {LINE_CHANNEL_ACCESS_TOKEN}"}
     
     is_cc = "/cc" in page_url
@@ -681,16 +696,16 @@ def send_video_line_flex(header_title, round_num, location, video_data, page_url
             "aspectMode": "cover"
         }
 
-    flex_payload = {"to": LINE_USER_ID, "messages": [{"type": "flex", "altText": f"{header_title} {title_main} {title_sub}", "contents": bubble}]}
+    flex_payload = {"messages": [{"type": "flex", "altText": f"{header_title} {title_main} {title_sub}", "contents": bubble}]}
     try: requests.post(url, headers=headers, json=flex_payload, timeout=TIMEOUT_SEC)
     except Exception: pass
 
 # ==========================================
-# メイン監視処理（テスト運用モード）
+# メイン監視処理（本番運用モード）
 # ==========================================
 def main():
     now = get_jst_now()
-    print(f"[{now.strftime('%Y-%m-%d %H:%M:%S')}] 全自動監視処理（テスト運用モード）を開始します。")
+    print(f"[{now.strftime('%Y-%m-%d %H:%M:%S')}] 全自動監視処理（本番運用モード）を開始します。")
     
     conn, is_initial_setup = init_db()
     c = conn.cursor()
@@ -862,7 +877,7 @@ def main():
                     c.execute("UPDATE tournaments SET winner_name = ? WHERE url = ?", (winner_name, url))
                 
                 # ==========================================
-                # ★ 動画公開の待機・通知ロジック (YouTube Bot対策版)
+                # ★ 動画公開の待機・通知ロジック (oEmbed対応版)
                 # ==========================================
                 is_final_available = False
                 if "final" in videos_data:

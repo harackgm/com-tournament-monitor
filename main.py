@@ -12,6 +12,7 @@ import xml.etree.ElementTree as ET
 # 安全制御・環境変数設定
 # ==========================================
 LINE_CHANNEL_ACCESS_TOKEN = os.environ.get("LINE_CHANNEL_ACCESS_TOKEN", "")
+LINE_USER_ID = os.environ.get("LINE_USER_ID", "")  # ★ テスト配信用に復活
 
 DB_PATH = "tournaments.db"
 MAX_NOTIFY_LIMIT = 5  # 大量通知ストッパー
@@ -55,10 +56,8 @@ def fetch_url(url, retries=3):
             res = requests.get(url, headers=headers, timeout=TIMEOUT_SEC)
             res.raise_for_status()
             return res
-        except Exception as e:
-            if i == retries - 1:
-                print(f"⚠️ 接続失敗 (上限到達): {url} -> {e}")
-                return None
+        except Exception:
+            if i == retries - 1: return None
             time.sleep(2)
 
 def is_youtube_video_available(youtube_url):
@@ -275,9 +274,11 @@ def extract_tournament_results_from_html(html_content):
     
     rank_pattern = re.compile(r"^(優勝|準優勝|[1-3１-３一二三]位)")
     
-    # 💡 強化1: <li> タグからの直接抽出（速報段階に対応）
     for li in soup.find_all('li'):
         text = li.get_text(strip=True)
+        # ★ 修正: インタビュー等のテキストは結果抽出から除外
+        if "インタビュー" in text or "動画" in text: continue
+
         img_tag = li.find('img')
         src = None
         if img_tag and img_tag.get('src'):
@@ -285,7 +286,6 @@ def extract_tournament_results_from_html(html_content):
             if src.startswith('/'): src = "https://www.kanritsuriba.com" + src
             src = re.sub(r'-\d+x\d+(?=\.[a-zA-Z]+$)', '', src)
 
-        # 例: "優勝：山下晃平選手"
         match = re.search(r"^(優勝|準優勝|[1-3１-３一二三]位)[:：\s]*([^\s/【選手]+)", text)
         if match:
             rank = match.group(1)
@@ -299,12 +299,10 @@ def extract_tournament_results_from_html(html_content):
                 if not any(r['name'] == name for r in results):
                     results.append({"rank": rank, "name": name, "image_url": src, "jump_target": name})
         
-        # ラーメン賞の抽出
         if "ラーメン賞" in text or "４位" in text or "4位" in text:
             if not any(r['rank'] == "ラーメン賞" for r in results):
                 results.append({"rank": "ラーメン賞", "name": "", "image_url": src, "jump_target": "ラーメン賞"})
     
-    # 💡 強化2: <h3> <h4> からの抽出（後から追加されるタックル情報からの抽出）
     for tag in soup.find_all(['h3', 'h4']):
         exact_heading = tag.get_text(strip=True)
         if "インタビュー" in exact_heading or "動画" in exact_heading: continue
@@ -342,7 +340,16 @@ def extract_tournament_results_from_html(html_content):
                     existing['image_url'] = img_url
             else:
                 results.append({"rank": rank, "name": name, "image_url": img_url, "jump_target": name})
-                    
+                
+    # ★ 修正: 順番を「優勝→2位→3位→ラーメン賞」にソート
+    def get_rank_order(rank):
+        if "優勝" in rank: return 1
+        if "２位" in rank or "2位" in rank: return 2
+        if "３位" in rank or "3位" in rank: return 3
+        if "ラーメン賞" in rank: return 4
+        return 99
+    
+    results.sort(key=lambda x: get_rank_order(x['rank']))
     return results
 
 def get_winner_congratulations_message(cursor, winner_name, current_round_num):
@@ -479,10 +486,10 @@ def fetch_page_data(url):
 # ==========================================
 # LINE Push Message (Flex Message カルーセル)
 # ==========================================
-# ★ 本番用：一斉送信（broadcast）仕様 ★
+# ★ テスト配信用: 個別送信(push) ★
 def send_line_flex(header_title, round_num, location, event_date_str, entry_str, page_url, theme_color, extra_info=None, main_image_url=None):
-    if not LINE_CHANNEL_ACCESS_TOKEN: return
-    url = "https://api.line.me/v2/bot/message/broadcast"
+    if not LINE_CHANNEL_ACCESS_TOKEN or not LINE_USER_ID: return
+    url = "https://api.line.me/v2/bot/message/push"
     headers = {"Content-Type": "application/json", "Authorization": f"Bearer {LINE_CHANNEL_ACCESS_TOKEN}"}
     
     is_cc = "/cc" in page_url
@@ -549,13 +556,13 @@ def send_line_flex(header_title, round_num, location, event_date_str, entry_str,
             "aspectMode": "cover"
         }
 
-    flex_payload = {"messages": [{"type": "flex", "altText": f"【{header_title}】{title_main} {title_sub}", "contents": {"type": "carousel", "contents": [bubble]}}]}
+    flex_payload = {"to": LINE_USER_ID, "messages": [{"type": "flex", "altText": f"【{header_title}】{title_main} {title_sub}", "contents": {"type": "carousel", "contents": [bubble]}}]}
     try: requests.post(url, headers=headers, json=flex_payload, timeout=TIMEOUT_SEC)
     except Exception: pass
 
 def send_result_line_flex(header_title, round_num, location, results, page_url, theme_color):
-    if not LINE_CHANNEL_ACCESS_TOKEN: return
-    url = "https://api.line.me/v2/bot/message/broadcast"
+    if not LINE_CHANNEL_ACCESS_TOKEN or not LINE_USER_ID: return
+    url = "https://api.line.me/v2/bot/message/push"
     headers = {"Content-Type": "application/json", "Authorization": f"Bearer {LINE_CHANNEL_ACCESS_TOKEN}"}
     
     is_cc = "/cc" in page_url
@@ -618,12 +625,12 @@ def send_result_line_flex(header_title, round_num, location, results, page_url, 
         bubbles.append(bubble)
     
     if bubbles:
-        try: requests.post(url, headers=headers, json={"messages": [{"type": "flex", "altText": f"【大会結果】{title_text_str}", "contents": {"type": "carousel", "contents": bubbles}}]}, timeout=TIMEOUT_SEC)
+        try: requests.post(url, headers=headers, json={"to": LINE_USER_ID, "messages": [{"type": "flex", "altText": f"【大会結果】{title_text_str}", "contents": {"type": "carousel", "contents": bubbles}}]}, timeout=TIMEOUT_SEC)
         except Exception: pass
 
 def send_video_line_flex(header_title, round_num, location, video_data, page_url, theme_color, main_image_url=None):
-    if not LINE_CHANNEL_ACCESS_TOKEN: return
-    url = "https://api.line.me/v2/bot/message/broadcast"
+    if not LINE_CHANNEL_ACCESS_TOKEN or not LINE_USER_ID: return
+    url = "https://api.line.me/v2/bot/message/push"
     headers = {"Content-Type": "application/json", "Authorization": f"Bearer {LINE_CHANNEL_ACCESS_TOKEN}"}
     
     is_cc = "/cc" in page_url
@@ -656,23 +663,19 @@ def send_video_line_flex(header_title, round_num, location, video_data, page_url
             "aspectMode": "cover"
         }
 
-    flex_payload = {"messages": [{"type": "flex", "altText": f"{header_title} {title_main} {title_sub}", "contents": bubble}]}
+    flex_payload = {"to": LINE_USER_ID, "messages": [{"type": "flex", "altText": f"{header_title} {title_main} {title_sub}", "contents": bubble}]}
     try: requests.post(url, headers=headers, json=flex_payload, timeout=TIMEOUT_SEC)
     except Exception: pass
 
 # ==========================================
-# メイン監視処理（一般公開・本番運用モード）
+# メイン監視処理（テスト環境用：送信先を強制変更）
 # ==========================================
 def main():
     now = get_jst_now()
-    print(f"[{now.strftime('%Y-%m-%d %H:%M:%S')}] 全自動監視処理（本番運用モード）を開始します。")
+    print(f"[{now.strftime('%Y-%m-%d %H:%M:%S')}] 全自動監視処理（テスト運用モード）を開始します。")
     
     conn, is_initial_setup = init_db()
     c = conn.cursor()
-
-    # ★ リカバリ処理：シルフ大会（第21戦）で結果が中途半端に登録されている場合、フラグを一時リセットする
-    c.execute("UPDATE tournaments SET notified_result = 0 WHERE url LIKE '%2026_21%' AND notified_result > 0")
-    conn.commit()
 
     current_year = now.year
     is_night_mode = (now.hour >= NIGHT_MODE_START or now.hour < NIGHT_MODE_END)

@@ -149,7 +149,6 @@ def get_theme_color(location_name):
 def extract_landscape_image(html_p1, html_p2):
     target_html = html_p2 if html_p2 else html_p1
     if not target_html: return None
-    
     soup = BeautifulSoup(target_html, "html.parser")
     content_area = soup.find("div", class_="entry-content")
     if not content_area: return None
@@ -157,10 +156,8 @@ def extract_landscape_image(html_p1, html_p2):
     for img in content_area.find_all('img'):
         src = img.get('src')
         if not src: continue
-        
         alt = img.get('alt', '')
         if "優勝" in alt or "表彰台" in alt: continue
-        
         width = img.get('width')
         height = img.get('height')
         if width and height:
@@ -170,8 +167,7 @@ def extract_landscape_image(html_p1, html_p2):
                 if w > h:
                     if src.startswith('/'): src = "https://www.kanritsuriba.com" + src
                     return re.sub(r'-\d+x\d+(?=\.[a-zA-Z]+$)', '', src)
-            except ValueError:
-                pass
+            except ValueError: pass
                 
     for img in content_area.find_all('img'):
         src = img.get('src')
@@ -180,7 +176,6 @@ def extract_landscape_image(html_p1, html_p2):
         if "優勝" in alt or "表彰台" in alt: continue
         if src.startswith('/'): src = "https://www.kanritsuriba.com" + src
         return re.sub(r'-\d+x\d+(?=\.[a-zA-Z]+$)', '', src)
-        
     return None
 
 def extract_podium_image(html_content):
@@ -264,18 +259,15 @@ def extract_tournament_results_from_html(html_content):
                 nxt = nxt.find_next_sibling()
                 count += 1
                 
-            # ★ 修正: 記号を除いた安全なジャンプターゲットの生成
-            # 見出しから角括弧やスペースなどの記号を区切り文字として分割し、名前が含まれる部分を抽出
-            parts = re.split(r'[\[\]\s]', exact_heading)
-            safe_target = next((p for p in parts if name in p), exact_heading)
-                
             existing = next((r for r in results if r['name'] == name), None)
             if existing:
-                existing['jump_target'] = safe_target
+                # ★ 修正: 確実にタックル見出しへ飛ぶよう「〇〇選手のタックル」で上書き
+                existing['jump_target'] = f"{name}選手のタックル"
                 if not existing.get('image_url') and img_url:
                     existing['image_url'] = img_url
             else:
-                results.append({"rank": rank, "name": name, "image_url": img_url, "jump_target": safe_target})
+                # 新規追加時も同様に設定
+                results.append({"rank": rank, "name": name, "image_url": img_url, "jump_target": f"{name}選手のタックル"})
                 
     def get_rank_order(rank):
         if "優勝" in rank: return 1
@@ -316,6 +308,7 @@ def get_winner_congratulations_message(cursor, winner_name, current_round_num):
 # ==========================================
 # LINE Push Message (Flex Message カルーセル)
 # ==========================================
+# ★ テスト配信用：個別送信（push）仕様 ★
 def send_result_line_flex(header_title, round_num, location, results, page_url, theme_color):
     if not LINE_CHANNEL_ACCESS_TOKEN or not LINE_USER_ID: return
     url = "https://api.line.me/v2/bot/message/push"

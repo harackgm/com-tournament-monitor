@@ -149,6 +149,7 @@ def get_theme_color(location_name):
 def extract_landscape_image(html_p1, html_p2):
     target_html = html_p2 if html_p2 else html_p1
     if not target_html: return None
+    
     soup = BeautifulSoup(target_html, "html.parser")
     content_area = soup.find("div", class_="entry-content")
     if not content_area: return None
@@ -156,8 +157,10 @@ def extract_landscape_image(html_p1, html_p2):
     for img in content_area.find_all('img'):
         src = img.get('src')
         if not src: continue
+        
         alt = img.get('alt', '')
         if "優勝" in alt or "表彰台" in alt: continue
+        
         width = img.get('width')
         height = img.get('height')
         if width and height:
@@ -167,7 +170,8 @@ def extract_landscape_image(html_p1, html_p2):
                 if w > h:
                     if src.startswith('/'): src = "https://www.kanritsuriba.com" + src
                     return re.sub(r'-\d+x\d+(?=\.[a-zA-Z]+$)', '', src)
-            except ValueError: pass
+            except ValueError:
+                pass
                 
     for img in content_area.find_all('img'):
         src = img.get('src')
@@ -176,6 +180,7 @@ def extract_landscape_image(html_p1, html_p2):
         if "優勝" in alt or "表彰台" in alt: continue
         if src.startswith('/'): src = "https://www.kanritsuriba.com" + src
         return re.sub(r'-\d+x\d+(?=\.[a-zA-Z]+$)', '', src)
+        
     return None
 
 def extract_podium_image(html_content):
@@ -259,14 +264,18 @@ def extract_tournament_results_from_html(html_content):
                 nxt = nxt.find_next_sibling()
                 count += 1
                 
+            # ★ 修正: 記号を除いた安全なジャンプターゲットの生成
+            # 見出しから角括弧やスペースなどの記号を区切り文字として分割し、名前が含まれる部分を抽出
+            parts = re.split(r'[\[\]\s]', exact_heading)
+            safe_target = next((p for p in parts if name in p), exact_heading)
+                
             existing = next((r for r in results if r['name'] == name), None)
             if existing:
-                # ★ 修正: ページ先頭でジャンプが止まるのを防ぐため、ジャンプ先を見出しの「全文」に上書きする
-                existing['jump_target'] = exact_heading
+                existing['jump_target'] = safe_target
                 if not existing.get('image_url') and img_url:
                     existing['image_url'] = img_url
             else:
-                results.append({"rank": rank, "name": name, "image_url": img_url, "jump_target": exact_heading})
+                results.append({"rank": rank, "name": name, "image_url": img_url, "jump_target": safe_target})
                 
     def get_rank_order(rank):
         if "優勝" in rank: return 1
@@ -307,7 +316,6 @@ def get_winner_congratulations_message(cursor, winner_name, current_round_num):
 # ==========================================
 # LINE Push Message (Flex Message カルーセル)
 # ==========================================
-# ★ テスト配信用：個別送信（push）仕様 ★
 def send_result_line_flex(header_title, round_num, location, results, page_url, theme_color):
     if not LINE_CHANNEL_ACCESS_TOKEN or not LINE_USER_ID: return
     url = "https://api.line.me/v2/bot/message/push"
@@ -360,7 +368,7 @@ def send_result_line_flex(header_title, round_num, location, results, page_url, 
 
         jump_target = res.get('jump_target', name or rank)
         separator = "&" if "?" in page_url else "?"
-        # ★ ここで jump_target（見出し全文）がURLにエンコードされて組み込まれる
+        # ★ openExternalBrowser=1 で外部ブラウザを強制し、URLエンコードした安全なフレーズでジャンプ
         target_url = f"{page_url}{separator}openExternalBrowser=1#:~:text={urllib.parse.quote(jump_target)}"
 
         bubble = {
@@ -378,12 +386,11 @@ def send_result_line_flex(header_title, round_num, location, results, page_url, 
         try: requests.post(url, headers=headers, json={"to": LINE_USER_ID, "messages": [{"type": "flex", "altText": f"【大会結果】{title_text_str}", "contents": {"type": "carousel", "contents": bubbles}}]}, timeout=TIMEOUT_SEC)
         except Exception: pass
 
-
 # ==========================================
-# ★ テスト環境用：実データ取得＆送信先を強制変更
+# ★ テスト環境用：リンク動作確認
 # ==========================================
 def main():
-    print("=== 実際のHPデータを用いたテスト通知（あなた専用） ===")
+    print("=== 実際のHPデータを用いたリンクテスト通知（あなた専用） ===")
     conn, _ = init_db()
     c = conn.cursor()
     

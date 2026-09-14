@@ -146,6 +146,38 @@ def get_theme_color(location_name):
 # ==========================================
 # テキスト解析ヘルパー関数群
 # ==========================================
+def extract_landscape_image(html_p1, html_p2):
+    target_html = html_p2 if html_p2 else html_p1
+    if not target_html: return None
+    soup = BeautifulSoup(target_html, "html.parser")
+    content_area = soup.find("div", class_="entry-content")
+    if not content_area: return None
+    
+    for img in content_area.find_all('img'):
+        src = img.get('src')
+        if not src: continue
+        alt = img.get('alt', '')
+        if "優勝" in alt or "表彰台" in alt: continue
+        width = img.get('width')
+        height = img.get('height')
+        if width and height:
+            try:
+                w = int(re.sub(r'\D', '', str(width)))
+                h = int(re.sub(r'\D', '', str(height)))
+                if w > h:
+                    if src.startswith('/'): src = "https://www.kanritsuriba.com" + src
+                    return re.sub(r'-\d+x\d+(?=\.[a-zA-Z]+$)', '', src)
+            except ValueError: pass
+                
+    for img in content_area.find_all('img'):
+        src = img.get('src')
+        if not src: continue
+        alt = img.get('alt', '')
+        if "優勝" in alt or "表彰台" in alt: continue
+        if src.startswith('/'): src = "https://www.kanritsuriba.com" + src
+        return re.sub(r'-\d+x\d+(?=\.[a-zA-Z]+$)', '', src)
+    return None
+
 def extract_podium_image(html_content):
     if not html_content: return None
     soup = BeautifulSoup(html_content, "html.parser")
@@ -166,7 +198,7 @@ def extract_tournament_results_from_html(html_content):
     
     rank_pattern = re.compile(r"^(優勝|準優勝|[1-3１-３一二三]位)")
     
-    # <li> タグからの抽出
+    # <li> タグからの抽出（速報用）
     for li in soup.find_all('li'):
         text = li.get_text(strip=True)
         if "インタビュー" in text or "動画" in text: continue
@@ -195,7 +227,7 @@ def extract_tournament_results_from_html(html_content):
             if not any(r['rank'] == "ラーメン賞" for r in results):
                 results.append({"rank": "ラーメン賞", "name": "", "image_url": src, "jump_target": "ラーメン賞"})
     
-    # <h3> <h4> タグからの抽出
+    # <h3> <h4> タグからの抽出（詳細情報の紐付け）
     for tag in soup.find_all(['h3', 'h4']):
         exact_heading = tag.get_text(strip=True)
         if "インタビュー" in exact_heading or "動画" in exact_heading: continue
@@ -229,10 +261,12 @@ def extract_tournament_results_from_html(html_content):
                 
             existing = next((r for r in results if r['name'] == name), None)
             if existing:
+                # ★ 修正: ページ先頭でジャンプが止まるのを防ぐため、ジャンプ先を見出しの「全文」に上書きする
+                existing['jump_target'] = exact_heading
                 if not existing.get('image_url') and img_url:
                     existing['image_url'] = img_url
             else:
-                results.append({"rank": rank, "name": name, "image_url": img_url, "jump_target": name})
+                results.append({"rank": rank, "name": name, "image_url": img_url, "jump_target": exact_heading})
                 
     def get_rank_order(rank):
         if "優勝" in rank: return 1
@@ -326,7 +360,7 @@ def send_result_line_flex(header_title, round_num, location, results, page_url, 
 
         jump_target = res.get('jump_target', name or rank)
         separator = "&" if "?" in page_url else "?"
-        # ★ 修正: 本物のURLからリンクジャンプを生成
+        # ★ ここで jump_target（見出し全文）がURLにエンコードされて組み込まれる
         target_url = f"{page_url}{separator}openExternalBrowser=1#:~:text={urllib.parse.quote(jump_target)}"
 
         bubble = {
@@ -343,6 +377,7 @@ def send_result_line_flex(header_title, round_num, location, results, page_url, 
     if bubbles:
         try: requests.post(url, headers=headers, json={"to": LINE_USER_ID, "messages": [{"type": "flex", "altText": f"【大会結果】{title_text_str}", "contents": {"type": "carousel", "contents": bubbles}}]}, timeout=TIMEOUT_SEC)
         except Exception: pass
+
 
 # ==========================================
 # ★ テスト環境用：実データ取得＆送信先を強制変更
@@ -365,17 +400,14 @@ def main():
 
     combined_html = html_p2 + html_p1
     
-    # 💡 ダミーデータではなく、本物の抽出ロジックを通す
     results_data = extract_tournament_results_from_html(combined_html)
     
     if results_data:
-        # 写真を補完（表彰台など）
         podium_img_url = extract_podium_image(combined_html)
         for r in results_data:
             if not r.get('image_url') and podium_img_url and r['rank'] in ['優勝', '２位', '３位']:
                 r['image_url'] = podium_img_url
                 
-        # 優勝者へのお祝いメッセージ
         for r in results_data:
             if r['rank'] == "優勝":
                 r['congrat_msg'] = get_winner_congratulations_message(c, r['name'], round_num)

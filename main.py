@@ -12,7 +12,6 @@ import xml.etree.ElementTree as ET
 # 安全制御・環境変数設定
 # ==========================================
 LINE_CHANNEL_ACCESS_TOKEN = os.environ.get("LINE_CHANNEL_ACCESS_TOKEN", "")
-# ※本番用（一斉送信）のため LINE_USER_ID は使用しません
 
 DB_PATH = "tournaments.db"
 MAX_NOTIFY_LIMIT = 5  # 大量通知ストッパー
@@ -60,21 +59,16 @@ def fetch_url(url, retries=3):
             if i == retries - 1:
                 print(f"⚠️ 接続失敗 (上限到達): {url} -> {e}")
                 return None
-            wait_time = 2
-            print(f"💡 リトライ待ち ({i+1}/{retries}回目, {wait_time}秒後): {url}")
-            time.sleep(wait_time)
+            time.sleep(2)
 
 def is_youtube_video_available(youtube_url):
     if not youtube_url: return False
     res = fetch_url(youtube_url)
-    if not res or res.status_code != 200:
-        return False
+    if not res or res.status_code != 200: return False
     html = res.text
     upcoming_keywords = ["isUpcoming", "公開予定", "ライブ配信まで", "プレミア公開"]
     for kw in upcoming_keywords:
-        if kw in html:
-            print(f"⏳ YouTube動画はプレミア公開前（未再生）です: {youtube_url}")
-            return False
+        if kw in html: return False
     return True
 
 def get_weather_advice(location_name):
@@ -94,36 +88,27 @@ def get_weather_advice(location_name):
             wind = data["daily"]["windspeed_10m_max"][1]
             w_code = data["daily"]["weathercode"][1]
 
-            if w_code in [51, 53, 55, 61, 63, 65, 80, 81, 82, 95, 96, 99] or (precip > 1.0):
-                w_text = f"🌧 雨予報 (降水量: {precip}mm)"
-            elif w_code in [3, 45, 48]:
-                w_text = "☁️ 曇り予報"
-            else:
-                w_text = "🌤 晴れ/概ね晴れ"
+            if w_code in [51, 53, 55, 61, 63, 65, 80, 81, 82, 95, 96, 99] or (precip > 1.0): w_text = f"🌧 雨予報 (降水量: {precip}mm)"
+            elif w_code in [3, 45, 48]: w_text = "☁️ 曇り予報"
+            else: w_text = "🌤 晴れ/概ね晴れ"
                 
             advice = f"{w_text}\n🌡 気温: 最高{int(max_temp)}℃ / 最低{int(min_temp)}℃\n🌬 最大風速: {wind}m/s\n\n"
             
-            if precip > 1.0:
-                advice += "レインウェアと防水対策をお忘れなく！"
-            elif max_temp >= 30:
-                advice += "猛暑が予想されます。熱中症対策を万全に！"
-            elif max_temp <= 10 or min_temp <= 5:
-                advice += "冷え込みが予想されます。防寒・防風対策をしっかりと！"
-            elif wind >= 5.0:
-                advice += "風が少し強そうです。キャスト時のラインメンディングに注意しましょう！"
-            else:
-                advice += "絶好の釣り日和になりそうです！"
+            if precip > 1.0: advice += "レインウェアと防水対策をお忘れなく！"
+            elif max_temp >= 30: advice += "猛暑が予想されます。熱中症対策を万全に！"
+            elif max_temp <= 10 or min_temp <= 5: advice += "冷え込みが予想されます。防寒・防風対策をしっかりと！"
+            elif wind >= 5.0: advice += "風が少し強そうです。キャスト時のラインメンディングに注意しましょう！"
+            else: advice += "絶好の釣り日和になりそうです！"
                 
             return f"{advice}\n🔥 日頃の練習の成果を発揮し、優勝を目指してください！"
-    except Exception:
-        pass
+    except Exception: pass
     return "🎣 体調管理を万全にして大会に挑みましょう！優勝目指してファイトです！"
 
 # ==========================================
 # 1. データベース初期化
 # ==========================================
 def init_db():
-    conn = sqlite3.connect(DB_PATH)
+    conn = sqlite3.connect(DB_PATH, timeout=10)
     c = conn.cursor()
     c.execute("PRAGMA table_info(tournaments)")
     columns = c.fetchall()
@@ -162,16 +147,11 @@ def init_db():
         conn.commit()
     else:
         column_names = [col[1] for col in columns]
-        if "notified_result" not in column_names:
-            c.execute("ALTER TABLE tournaments ADD COLUMN notified_result INTEGER DEFAULT 0")
-        if "notified_video_interview" not in column_names:
-            c.execute("ALTER TABLE tournaments ADD COLUMN notified_video_interview INTEGER DEFAULT 0")
-        if "notified_video_final" not in column_names:
-            c.execute("ALTER TABLE tournaments ADD COLUMN notified_video_final INTEGER DEFAULT 0")
-        if "winner_name" not in column_names:
-            c.execute("ALTER TABLE tournaments ADD COLUMN winner_name TEXT DEFAULT ''")
-        if "result_detected_at" not in column_names:
-            c.execute("ALTER TABLE tournaments ADD COLUMN result_detected_at DATETIME")
+        if "notified_result" not in column_names: c.execute("ALTER TABLE tournaments ADD COLUMN notified_result INTEGER DEFAULT 0")
+        if "notified_video_interview" not in column_names: c.execute("ALTER TABLE tournaments ADD COLUMN notified_video_interview INTEGER DEFAULT 0")
+        if "notified_video_final" not in column_names: c.execute("ALTER TABLE tournaments ADD COLUMN notified_video_final INTEGER DEFAULT 0")
+        if "winner_name" not in column_names: c.execute("ALTER TABLE tournaments ADD COLUMN winner_name TEXT DEFAULT ''")
+        if "result_detected_at" not in column_names: c.execute("ALTER TABLE tournaments ADD COLUMN result_detected_at DATETIME")
         conn.commit()
 
     c.execute("""
@@ -183,14 +163,11 @@ def init_db():
             PRIMARY KEY (url, rank, player_name)
         )
     """)
-    conn.commit()
     c.execute("CREATE TABLE IF NOT EXISTS system_config (key TEXT PRIMARY KEY, value TEXT)")
-    
     c.execute("SELECT value FROM system_config WHERE key = 'system_update_v6'")
     if not c.fetchone():
         c.execute("INSERT INTO system_config (key, value) VALUES ('system_update_v6', '1')")
-        conn.commit()
-
+    conn.commit()
     return conn, is_initial_setup
 
 def get_theme_color(location_name):
@@ -210,7 +187,6 @@ def get_theme_color(location_name):
 def extract_landscape_image(html_p1, html_p2):
     target_html = html_p2 if html_p2 else html_p1
     if not target_html: return None
-    
     soup = BeautifulSoup(target_html, "html.parser")
     content_area = soup.find("div", class_="entry-content")
     if not content_area: return None
@@ -218,10 +194,8 @@ def extract_landscape_image(html_p1, html_p2):
     for img in content_area.find_all('img'):
         src = img.get('src')
         if not src: continue
-        
         alt = img.get('alt', '')
         if "優勝" in alt or "表彰台" in alt: continue
-        
         width = img.get('width')
         height = img.get('height')
         if width and height:
@@ -231,8 +205,7 @@ def extract_landscape_image(html_p1, html_p2):
                 if w > h:
                     if src.startswith('/'): src = "https://www.kanritsuriba.com" + src
                     return re.sub(r'-\d+x\d+(?=\.[a-zA-Z]+$)', '', src)
-            except ValueError:
-                pass
+            except ValueError: pass
                 
     for img in content_area.find_all('img'):
         src = img.get('src')
@@ -241,17 +214,15 @@ def extract_landscape_image(html_p1, html_p2):
         if "優勝" in alt or "表彰台" in alt: continue
         if src.startswith('/'): src = "https://www.kanritsuriba.com" + src
         return re.sub(r'-\d+x\d+(?=\.[a-zA-Z]+$)', '', src)
-        
     return None
 
 def extract_podium_image(html_content):
     if not html_content: return None
     soup = BeautifulSoup(html_content, "html.parser")
     for li in soup.find_all('li'):
-        p_tag = li.find('p')
         img_tag = li.find('img')
-        if p_tag and img_tag and img_tag.get('src'):
-            text = p_tag.get_text(strip=True)
+        if img_tag and img_tag.get('src'):
+            text = li.get_text(strip=True)
             if "表彰台" in text:
                 src = img_tag.get('src')
                 if src.startswith('/'): src = "https://www.kanritsuriba.com" + src
@@ -268,8 +239,7 @@ def extract_event_date_info(text, year):
             dt = datetime(y, m, d)
             w = ["月", "火", "水", "木", "金", "土", "日"][dt.weekday()]
             return dt, f"{y}年{m:02d}月{d:02d}日({w})"
-        except ValueError:
-            pass
+        except ValueError: pass
     return None, "開催日未定"
 
 def parse_entry_datetime(text, year):
@@ -287,8 +257,7 @@ def parse_entry_datetime(text, year):
             dt = datetime(entry_year, m, d, hh, mm)
             w = weekdays[dt.weekday()]
             return dt, f"{m:02d}月{d:02d}日({w}) {hh:02d}:{mm:02d}"
-        except ValueError:
-            pass
+        except ValueError: pass
     return None, "エントリー日時未定"
 
 def extract_reception_time(text):
@@ -306,6 +275,36 @@ def extract_tournament_results_from_html(html_content):
     
     rank_pattern = re.compile(r"^(優勝|準優勝|[1-3１-３一二三]位)")
     
+    # 💡 強化1: <li> タグからの直接抽出（速報段階に対応）
+    for li in soup.find_all('li'):
+        text = li.get_text(strip=True)
+        img_tag = li.find('img')
+        src = None
+        if img_tag and img_tag.get('src'):
+            src = img_tag.get('src')
+            if src.startswith('/'): src = "https://www.kanritsuriba.com" + src
+            src = re.sub(r'-\d+x\d+(?=\.[a-zA-Z]+$)', '', src)
+
+        # 例: "優勝：山下晃平選手"
+        match = re.search(r"^(優勝|準優勝|[1-3１-３一二三]位)[:：\s]*([^\s/【選手]+)", text)
+        if match:
+            rank = match.group(1)
+            name = match.group(2).strip()
+            name = re.sub(r"[\s\u3000/・\-]", "", name)
+            if "1" in rank or "一" in rank: rank = "優勝"
+            elif "2" in rank or "二" in rank or "準優勝" in rank: rank = "２位"
+            elif "3" in rank or "三" in rank: rank = "３位"
+            
+            if name and len(name) >= 2 and "タックル" not in name:
+                if not any(r['name'] == name for r in results):
+                    results.append({"rank": rank, "name": name, "image_url": src, "jump_target": name})
+        
+        # ラーメン賞の抽出
+        if "ラーメン賞" in text or "４位" in text or "4位" in text:
+            if not any(r['rank'] == "ラーメン賞" for r in results):
+                results.append({"rank": "ラーメン賞", "name": "", "image_url": src, "jump_target": "ラーメン賞"})
+    
+    # 💡 強化2: <h3> <h4> からの抽出（後から追加されるタックル情報からの抽出）
     for tag in soup.find_all(['h3', 'h4']):
         exact_heading = tag.get_text(strip=True)
         if "インタビュー" in exact_heading or "動画" in exact_heading: continue
@@ -330,25 +329,19 @@ def extract_tournament_results_from_html(html_content):
                 img = nxt.find('img') if hasattr(nxt, 'find') else None
                 if not img and nxt.name == 'img': img = nxt
                 if img and img.get('src'):
-                    img_url = img.get('src')
-                    if img_url.startswith('/'): img_url = "https://www.kanritsuriba.com" + img_url
+                    src = img.get('src')
+                    if src.startswith('/'): src = "https://www.kanritsuriba.com" + src
+                    img_url = re.sub(r'-\d+x\d+(?=\.[a-zA-Z]+$)', '', src)
                     break
                 nxt = nxt.find_next_sibling()
                 count += 1
                 
-            if not any(r['name'] == name for r in results):
+            existing = next((r for r in results if r['name'] == name), None)
+            if existing:
+                if not existing.get('image_url') and img_url:
+                    existing['image_url'] = img_url
+            else:
                 results.append({"rank": rank, "name": name, "image_url": img_url, "jump_target": name})
-                
-    for li in soup.find_all('li'):
-        p_tag = li.find('p')
-        img_tag = li.find('img')
-        if p_tag and img_tag and img_tag.get('src'):
-            text = p_tag.get_text(strip=True)
-            if "ラーメン賞" in text or "４位" in text or "4位" in text:
-                src = img_tag.get('src')
-                if src.startswith('/'): src = "https://www.kanritsuriba.com" + src
-                if not any(r['rank'] == "ラーメン賞" for r in results):
-                    results.append({"rank": "ラーメン賞", "name": "", "image_url": src, "jump_target": "ラーメン賞"})
                     
     return results
 
@@ -433,17 +426,12 @@ def extract_videos_from_html(html_content, url_year):
                         hh = int(match_time.group(3))
                         mm = int(match_time.group(4))
                         pub_year = url_year
-                        if m < 3 and datetime.now().month >= 11:
-                            pub_year += 1
-                        elif m > 10 and datetime.now().month <= 2:
-                            pub_year -= 1
-                            
+                        if m < 3 and datetime.now().month >= 11: pub_year += 1
+                        elif m > 10 and datetime.now().month <= 2: pub_year -= 1
                         publish_dt = datetime(pub_year, m, d, hh, mm)
-                    except ValueError:
-                        pass
+                    except ValueError: pass
 
                 video_info = {"title": text, "url": normalized_url, "publish_dt": publish_dt}
-                
                 if is_interview and "interview" not in videos: videos["interview"] = video_info
                 if is_final and "final" not in videos: videos["final"] = video_info
     return videos
@@ -470,8 +458,7 @@ def extract_entry_conditions(soup):
                     cond_text = re.sub(r"は\s*(?:\d+月|\d+[/.-]\d+).*", "", cond_text).strip()
                     if cond_text:
                         conditions[i] = cond_text
-    except Exception:
-        pass
+    except Exception: pass
     return conditions
 
 def fetch_page_data(url):
@@ -683,6 +670,10 @@ def main():
     conn, is_initial_setup = init_db()
     c = conn.cursor()
 
+    # ★ リカバリ処理：シルフ大会（第21戦）で結果が中途半端に登録されている場合、フラグを一時リセットする
+    c.execute("UPDATE tournaments SET notified_result = 0 WHERE url LIKE '%2026_21%' AND notified_result > 0")
+    conn.commit()
+
     current_year = now.year
     is_night_mode = (now.hour >= NIGHT_MODE_START or now.hour < NIGHT_MODE_END)
     urls_to_check = []
@@ -738,8 +729,6 @@ def main():
             if not combined_text: continue
 
             conditions_dict = extract_entry_conditions(BeautifulSoup(combined_html, "html.parser"))
-            
-            # ★ ページ1とページ2から横長風景画を優先取得
             main_image_url = extract_landscape_image(html_p1, html_p2)
 
             is_cc = "/cc" in url
@@ -840,7 +829,6 @@ def main():
                 )
                 if not is_initial_setup and not is_night_mode:
                     notify_queue.append({"type": "info", "header": "🆕【新規大会開催予定】", "round_num": round_num, "location": location, "event_date_str": event_date_str, "entry_str": entry_str, "url": url, "theme_color": theme_color, "extra_info": extra_info_dict, "main_image_url": main_image_url})
-                    print(f"🚀 【送信キュー追加】新規大会: 第{round_num}回/戦 {location}")
             else:
                 (db_url, db_round, db_loc, db_event_date, db_event_dt_str, db_entry_dt_str, db_entry_str, db_reception, db_fee, db_text, db_cancelled, n_new, n_1d, n_1h, n_15m, n_event_1d, n_just, n_after_24h, n_result, n_video_int, n_video_fin, db_winner, db_result_detected_at) = row
 
@@ -848,7 +836,6 @@ def main():
                 if db_entry_dt_str and current_entry_dt_str and db_entry_dt_str != current_entry_dt_str:
                     n_1d, n_1h, n_15m, n_just, n_after_24h = 0, 0, 0, 0, 0
                     db_updates.append(("UPDATE tournaments SET notified_1d=0, notified_1h=0, notified_15m=0, notified_just=0, notified_after_24h=0 WHERE url=?", (url,)))
-                    print(f"🔄 【フェーズ移行】エントリー日時が更新されたため通知フラグをリセット: 第{round_num}回/戦")
 
                 if winner_name and db_winner != winner_name:
                     c.execute("UPDATE tournaments SET winner_name = ? WHERE url = ?", (winner_name, url))
@@ -863,9 +850,7 @@ def main():
                     else:
                         video = videos_data["final"]
                         pub_dt = video.get("publish_dt")
-                        
-                        if pub_dt and pub_dt > now:
-                            print(f"⏳ 決勝戦動画は公開予定時刻前です ({pub_dt.strftime('%m/%d %H:%M')}): {url}")
+                        if pub_dt and pub_dt > now: pass
                         else:
                             if is_youtube_video_available(video["url"]):
                                 is_final_available = True
@@ -876,9 +861,7 @@ def main():
                 if "interview" in videos_data and n_video_int == 0:
                     video = videos_data["interview"]
                     pub_dt = video.get("publish_dt")
-                    
-                    if pub_dt and pub_dt > now:
-                        print(f"⏳ インタビュー動画は公開予定時刻前です ({pub_dt.strftime('%m/%d %H:%M')}): {url}")
+                    if pub_dt and pub_dt > now: pass
                     else:
                         if is_youtube_video_available(video["url"]):
                             if not is_night_mode:
@@ -896,10 +879,8 @@ def main():
                         db_updates.append(("UPDATE tournaments SET result_detected_at = ?, notified_result = 1 WHERE url = ?", (db_result_detected_at, url)))
                         
                         results_to_send_step1 = [r for r in results_data if r['rank'] != "ラーメン賞" or r.get('image_url')]
-                        
                         if not is_night_mode:
                             notify_queue.append({"type": "result", "header": "📣【大会結果 速報！】", "round_num": round_num, "location": location, "results": results_to_send_step1, "url": url, "theme_color": theme_color})
-                            print(f"🚀 【送信キュー追加】大会結果速報: 第{round_num}回/戦 {location}")
                     
                     elif n_result == 1:
                         if not db_result_detected_at:
@@ -910,14 +891,11 @@ def main():
                         hours_since_detected = (now - detected_dt).total_seconds() / 3600
                         
                         is_images_complete = len(main_results) > 0 and all(r.get('image_url') for r in main_results)
-                        
                         should_notify_photo = False
-                        if is_images_complete:
-                            should_notify_photo = True
-                        elif hours_since_detected >= 48:
-                            should_notify_photo = True
-                        elif is_final_available:
-                            should_notify_photo = True
+                        
+                        if is_images_complete: should_notify_photo = True
+                        elif hours_since_detected >= 48: should_notify_photo = True
+                        elif is_final_available: should_notify_photo = True
 
                         if should_notify_photo:
                             podium_img_url = extract_podium_image(combined_html)
@@ -926,14 +904,9 @@ def main():
                                     r['image_url'] = podium_img_url
 
                             final_results_to_send = [r for r in results_data if r['rank'] != "ラーメン賞" or r.get('image_url')]
-
                             if not is_night_mode:
                                 notify_queue.append({"type": "result", "header": "📸【大会結果 写真追加！】", "round_num": round_num, "location": location, "results": final_results_to_send, "url": url, "theme_color": theme_color})
                                 db_updates.append(("UPDATE tournaments SET notified_result = 2 WHERE url = ?", (url,)))
-                                print(f"🚀 【送信キュー追加】大会結果写真追加: 第{round_num}回/戦 {location}")
-                        else:
-                            missing_count = sum(1 for r in main_results if not r.get('image_url'))
-                            print(f"⏳ 結果写真追加待ち（検知から {int(hours_since_detected)}時間経過 / 未取得写真 {missing_count}名分）: {url}")
 
                 if n_new == 0 and not is_night_mode:
                     notify_queue.append({"type": "info", "header": "🆕【新規大会開催予定】", "round_num": round_num, "location": location, "event_date_str": event_date_str, "entry_str": entry_str, "url": url, "theme_color": theme_color, "extra_info": extra_info_dict, "main_image_url": main_image_url})

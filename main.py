@@ -259,15 +259,17 @@ def extract_tournament_results_from_html(html_content):
                 nxt = nxt.find_next_sibling()
                 count += 1
                 
+            # ★ 修正: 見出しの記号（括弧など）を分離し、名前が含まれる安全なフレーズのみを抽出
+            parts = re.split(r'[\[\]\s ]', exact_heading)
+            safe_target = next((p for p in parts if name in p), exact_heading)
+                
             existing = next((r for r in results if r['name'] == name), None)
             if existing:
-                # ★ 修正: 確実にタックル見出しへ飛ぶよう「〇〇選手のタックル」で上書き
-                existing['jump_target'] = f"{name}選手のタックル"
+                existing['jump_target'] = safe_target
                 if not existing.get('image_url') and img_url:
                     existing['image_url'] = img_url
             else:
-                # 新規追加時も同様に設定
-                results.append({"rank": rank, "name": name, "image_url": img_url, "jump_target": f"{name}選手のタックル"})
+                results.append({"rank": rank, "name": name, "image_url": img_url, "jump_target": safe_target})
                 
     def get_rank_order(rank):
         if "優勝" in rank: return 1
@@ -361,7 +363,7 @@ def send_result_line_flex(header_title, round_num, location, results, page_url, 
 
         jump_target = res.get('jump_target', name or rank)
         separator = "&" if "?" in page_url else "?"
-        # ★ openExternalBrowser=1 で外部ブラウザを強制し、URLエンコードした安全なフレーズでジャンプ
+        # ★ 修正: openExternalBrowser=1 で外部ブラウザを強制起動
         target_url = f"{page_url}{separator}openExternalBrowser=1#:~:text={urllib.parse.quote(jump_target)}"
 
         bubble = {

@@ -60,29 +60,37 @@ def fetch_url(url, retries=3):
             if i == retries - 1: return None
             time.sleep(2)
 
-def fetch_page_data(url):
-    res = fetch_url(url)
-    if res and res.status_code == 200:
-        try:
-            soup = BeautifulSoup(res.text, "html.parser")
-            h1_tag = soup.find('h1', class_='entry-title')
-            title_text = h1_tag.get_text(strip=True) if h1_tag else ""
-            content_area = soup.find("div", class_="entry-content") or soup
-            
-            text_space = content_area.get_text(separator=" ", strip=True)
-            text_lines = [line.strip() for line in content_area.get_text(separator="\n", strip=True).split("\n") if line.strip()]
-            return text_space, res.text, title_text, text_lines
-        except Exception: pass
-    return "", "", "", []
-
+# ★ 強化: YouTubeの公式機能(oEmbed)を使って、Bot弾きを回避しつつ確実な公開状態を判定する
 def is_youtube_video_available(youtube_url):
     if not youtube_url: return False
+    
+    # 1. YouTube公式の oEmbed API を使って動画のステータスをチェック (APIキー不要・ブロックされない)
+    # 非公開(Private)や削除済みの場合は 401 や 404 エラーが返る
+    oembed_url = f"https://www.youtube.com/oembed?url={urllib.parse.quote(youtube_url)}&format=json"
+    try:
+        oembed_res = requests.get(oembed_url, timeout=5)
+        if oembed_res.status_code != 200:
+            print(f"  [YouTube判定] oEmbedエラー({oembed_res.status_code})のため非公開または無効と判定: {youtube_url}")
+            return False
+    except Exception as e:
+        print(f"  [YouTube判定] oEmbed通信エラー: {e}")
+        return False
+
+    # 2. oEmbedが通っても「プレミア公開の待機中」の可能性があるので、念のためHTMLもチェック
     res = fetch_url(youtube_url)
     if not res or res.status_code != 200: return False
     html = res.text
-    upcoming_keywords = ["isUpcoming", "公開予定", "ライブ配信まで", "プレミア公開", "Private video", "非公開"]
-    for kw in upcoming_keywords:
-        if kw in html: return False
+    
+    # ブロックされた際の特有の文言や、待機中の文言が含まれていないか最終確認
+    unavailable_kws = [
+        "isUpcoming", "公開予定", "ライブ配信まで", "プレミア公開", 
+        "Private video", "非公開", "Video unavailable", "Sign in to confirm you"
+    ]
+    for kw in unavailable_kws:
+        if kw in html: 
+            print(f"  [YouTube判定] HTML内に '{kw}' を検知したため公開前と判定: {youtube_url}")
+            return False
+            
     return True
 
 def get_weather_advice(location_name):
@@ -687,10 +695,6 @@ def main():
     conn, is_initial_setup = init_db()
     c = conn.cursor()
 
-    # ★ 安全対策：今回のテスト通知を確実に送るため、シルフ大会のインタビュー通知フラグだけを一時的に未通知に戻します
-    c.execute("UPDATE tournaments SET notified_video_interview = 0 WHERE url LIKE '%2026_21%'")
-    conn.commit()
-
     current_year = now.year
     is_night_mode = (now.hour >= NIGHT_MODE_START or now.hour < NIGHT_MODE_END)
     urls_to_check = []
@@ -883,7 +887,6 @@ def main():
                 if "interview" in videos_data and n_video_int == 0:
                     video = videos_data["interview"]
                     pub_dt = video.get("publish_dt")
-                    # ★ 修正: 公開予定時間を過ぎていれば、YouTubeにアクセスせずに無条件で「公開」と判定して通知する
                     if pub_dt:
                         if pub_dt <= now:
                             if not is_night_mode:

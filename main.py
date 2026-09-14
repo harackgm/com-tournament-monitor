@@ -15,16 +15,7 @@ LINE_CHANNEL_ACCESS_TOKEN = os.environ.get("LINE_CHANNEL_ACCESS_TOKEN", "")
 LINE_USER_ID = os.environ.get("LINE_USER_ID", "")  # ★ テスト配信用に復活
 
 DB_PATH = "tournaments.db"
-MAX_NOTIFY_LIMIT = 5  # 大量通知ストッパー
 TIMEOUT_SEC = 10  # 通信タイムアウト時間(10秒)
-
-# --- 大会前日リマインドの通知時間帯指定 ---
-EVENT_1D_HOUR_START = 18
-EVENT_1D_HOUR_END = 22
-
-# --- 🌙 おやすみモード（深夜通知防止）設定 ---
-NIGHT_MODE_START = 23
-NIGHT_MODE_END = 9
 
 # 主要釣り場の座標マッピング
 LOCATION_COORDS = {
@@ -60,48 +51,20 @@ def fetch_url(url, retries=3):
             if i == retries - 1: return None
             time.sleep(2)
 
-def is_youtube_video_available(youtube_url):
-    if not youtube_url: return False
-    res = fetch_url(youtube_url)
-    if not res or res.status_code != 200: return False
-    html = res.text
-    upcoming_keywords = ["isUpcoming", "公開予定", "ライブ配信まで", "プレミア公開"]
-    for kw in upcoming_keywords:
-        if kw in html: return False
-    return True
-
-def get_weather_advice(location_name):
-    lat, lon = 36.5, 139.8
-    for name, coords in LOCATION_COORDS.items():
-        if name in location_name:
-            lat, lon = coords
-            break
-    try:
-        api_url = f"https://api.open-meteo.com/v1/forecast?latitude={lat}&longitude={lon}&daily=weathercode,temperature_2m_max,temperature_2m_min,precipitation_sum,windspeed_10m_max&timezone=Asia%2FTokyo"
-        res = requests.get(api_url, timeout=5)
-        if res.status_code == 200:
-            data = res.json()
-            max_temp = data["daily"]["temperature_2m_max"][1]
-            min_temp = data["daily"]["temperature_2m_min"][1]
-            precip = data["daily"]["precipitation_sum"][1]
-            wind = data["daily"]["windspeed_10m_max"][1]
-            w_code = data["daily"]["weathercode"][1]
-
-            if w_code in [51, 53, 55, 61, 63, 65, 80, 81, 82, 95, 96, 99] or (precip > 1.0): w_text = f"🌧 雨予報 (降水量: {precip}mm)"
-            elif w_code in [3, 45, 48]: w_text = "☁️ 曇り予報"
-            else: w_text = "🌤 晴れ/概ね晴れ"
-                
-            advice = f"{w_text}\n🌡 気温: 最高{int(max_temp)}℃ / 最低{int(min_temp)}℃\n🌬 最大風速: {wind}m/s\n\n"
+def fetch_page_data(url):
+    res = fetch_url(url)
+    if res and res.status_code == 200:
+        try:
+            soup = BeautifulSoup(res.text, "html.parser")
+            h1_tag = soup.find('h1', class_='entry-title')
+            title_text = h1_tag.get_text(strip=True) if h1_tag else ""
+            content_area = soup.find("div", class_="entry-content") or soup
             
-            if precip > 1.0: advice += "レインウェアと防水対策をお忘れなく！"
-            elif max_temp >= 30: advice += "猛暑が予想されます。熱中症対策を万全に！"
-            elif max_temp <= 10 or min_temp <= 5: advice += "冷え込みが予想されます。防寒・防風対策をしっかりと！"
-            elif wind >= 5.0: advice += "風が少し強そうです。キャスト時のラインメンディングに注意しましょう！"
-            else: advice += "絶好の釣り日和になりそうです！"
-                
-            return f"{advice}\n🔥 日頃の練習の成果を発揮し、優勝を目指してください！"
-    except Exception: pass
-    return "🎣 体調管理を万全にして大会に挑みましょう！優勝目指してファイトです！"
+            text_space = content_area.get_text(separator=" ", strip=True)
+            text_lines = [line.strip() for line in content_area.get_text(separator="\n", strip=True).split("\n") if line.strip()]
+            return text_space, res.text, title_text, text_lines
+        except Exception: pass
+    return "", "", "", []
 
 # ==========================================
 # 1. データベース初期化
@@ -183,43 +146,6 @@ def get_theme_color(location_name):
 # ==========================================
 # テキスト解析ヘルパー関数群
 # ==========================================
-def extract_landscape_image(html_p1, html_p2):
-    target_html = html_p2 if html_p2 else html_p1
-    if not target_html: return None
-    
-    soup = BeautifulSoup(target_html, "html.parser")
-    content_area = soup.find("div", class_="entry-content")
-    if not content_area: return None
-    
-    for img in content_area.find_all('img'):
-        src = img.get('src')
-        if not src: continue
-        
-        alt = img.get('alt', '')
-        if "優勝" in alt or "表彰台" in alt: continue
-        
-        width = img.get('width')
-        height = img.get('height')
-        if width and height:
-            try:
-                w = int(re.sub(r'\D', '', str(width)))
-                h = int(re.sub(r'\D', '', str(height)))
-                if w > h:
-                    if src.startswith('/'): src = "https://www.kanritsuriba.com" + src
-                    return re.sub(r'-\d+x\d+(?=\.[a-zA-Z]+$)', '', src)
-            except ValueError:
-                pass
-                
-    for img in content_area.find_all('img'):
-        src = img.get('src')
-        if not src: continue
-        alt = img.get('alt', '')
-        if "優勝" in alt or "表彰台" in alt: continue
-        if src.startswith('/'): src = "https://www.kanritsuriba.com" + src
-        return re.sub(r'-\d+x\d+(?=\.[a-zA-Z]+$)', '', src)
-        
-    return None
-
 def extract_podium_image(html_content):
     if not html_content: return None
     soup = BeautifulSoup(html_content, "html.parser")
@@ -233,47 +159,6 @@ def extract_podium_image(html_content):
                 return re.sub(r'-\d+x\d+(?=\.[a-zA-Z]+$)', '', src)
     return None
 
-def extract_event_date_info(text, year):
-    match = re.search(r"(?:(\d{4})[年/.-])?\s*(\d{1,2})[月/.-](\d{1,2})[日]?", text)
-    if match:
-        y = int(match.group(1)) if match.group(1) else year
-        m = int(match.group(2))
-        d = int(match.group(3))
-        try:
-            dt = datetime(y, m, d)
-            w = ["月", "火", "水", "木", "金", "土", "日"][dt.weekday()]
-            return dt, f"{y}年{m:02d}月{d:02d}日({w})"
-        except ValueError:
-            pass
-    return None, "開催日未定"
-
-def parse_entry_datetime(text, year):
-    weekdays = ["月", "火", "水", "木", "金", "土", "日"]
-    pattern_strict = re.search(r"(?:インターネットエントリー|エントリー|受付|募集)[^\d\n]{0,50}?(?:(\d{1,2})月(\d{1,2})日|(\d{1,2})[/.-](\d{1,2}))[^\d\n]{0,30}?(\d{1,2}):(\d{2})", text)
-    pattern = pattern_strict or re.search(r"(?:(\d{1,2})月(\d{1,2})日|(\d{1,2})[/.-](\d{1,2}))[^\d\n]{0,20}?(\d{1,2}):(\d{2})", text)
-
-    if pattern:
-        m = int(pattern.group(1) or pattern.group(3))
-        d = int(pattern.group(2) or pattern.group(4))
-        hh = int(pattern.group(5))
-        mm = int(pattern.group(6))
-        entry_year = year - 1 if m >= 11 else year
-        try:
-            dt = datetime(entry_year, m, d, hh, mm)
-            w = weekdays[dt.weekday()]
-            return dt, f"{m:02d}月{d:02d}日({w}) {hh:02d}:{mm:02d}"
-        except ValueError:
-            pass
-    return None, "エントリー日時未定"
-
-def extract_reception_time(text):
-    match = re.search(r"【?受\s*付】?[：:\s]*([0-2]?[0-9][:：][0-5][0-9](?:\s*[\~～\-]\s*[0-2]?[0-9][:：][0-5][0-9])?|[^。、\n]{2,10}より)", text)
-    return match.group(1).strip() if match else "情報参照"
-
-def extract_fee(text):
-    match = re.search(r"【?(?:参加費用|参加費|費用)】?[：:\s]*([^。、\n]{2,20}円(?:\s*[\(（][^\)）]*[\)）])?)", text)
-    return match.group(1).strip() if match else "情報参照"
-
 def extract_tournament_results_from_html(html_content):
     results = []
     if not html_content: return results
@@ -281,6 +166,7 @@ def extract_tournament_results_from_html(html_content):
     
     rank_pattern = re.compile(r"^(優勝|準優勝|[1-3１-３一二三]位)")
     
+    # <li> タグからの抽出
     for li in soup.find_all('li'):
         text = li.get_text(strip=True)
         if "インタビュー" in text or "動画" in text: continue
@@ -309,6 +195,7 @@ def extract_tournament_results_from_html(html_content):
             if not any(r['rank'] == "ラーメン賞" for r in results):
                 results.append({"rank": "ラーメン賞", "name": "", "image_url": src, "jump_target": "ラーメン賞"})
     
+    # <h3> <h4> タグからの抽出
     for tag in soup.find_all(['h3', 'h4']):
         exact_heading = tag.get_text(strip=True)
         if "インタビュー" in exact_heading or "動画" in exact_heading: continue
@@ -383,173 +270,10 @@ def get_winner_congratulations_message(cursor, winner_name, current_round_num):
     elif past_wins >= 1: return f"🎉 今季{past_wins + 1}勝目のお祝いを申し上げます！素晴らしい快進撃です！👏"
     else: return "🎉 優勝おめでとうございます！見事な勝利です！"
 
-def normalize_youtube_url(url_str):
-    if not url_str: return url_str
-    if url_str.startswith("//"): url_str = "https:" + url_str
-    embed_match = re.search(r"(?:youtube\.com/embed/|youtu\.be/|youtube\.com/watch\?v=)([a-zA-Z0-9_-]+)", url_str)
-    if embed_match: return f"https://www.youtube.com/watch?v={embed_match.group(1)}"
-    return url_str
-
-def extract_videos_from_html(html_content, url_year):
-    videos = {}
-    if not html_content: return videos
-    soup = BeautifulSoup(html_content, "html.parser")
-    headings = soup.find_all(['h2', 'h3', 'h4'])
-    interview_kws = ["インタビュー", "優勝者の声", "コメント", "ヒーロー", "winner"]
-    final_kws = ["決勝", "ファイナル", "優勝決定戦", "final"]
-    exclude_kws = ["準決勝", "予選", "セミファイナル", "3位決定戦", "三位決定戦", "準々決勝", "semi"]
-
-    for i, tag in enumerate(headings):
-        text = tag.get_text(strip=True)
-        text_lower = text.lower()
-        is_interview = any(kw in text_lower for kw in interview_kws)
-        is_final = any(kw in text_lower for kw in final_kws) and not any(kw in text_lower for kw in exclude_kws)
-        
-        if is_interview or is_final:
-            block_elements = []
-            curr = tag.next_element
-            while curr and curr != (headings[i+1] if i+1 < len(headings) else None):
-                block_elements.append(curr)
-                curr = curr.next_element
-            block_soup = BeautifulSoup("".join([str(e) for e in block_elements]), "html.parser")
-            
-            vid_url = None
-            for iframe in block_soup.find_all('iframe'):
-                src = iframe.get('src', '')
-                if 'youtube' in src or 'youtu.be' in src:
-                    vid_url = src
-                    break
-            if not vid_url:
-                for a_tag in block_soup.find_all('a'):
-                    target_str = f"{a_tag.get('href', '')} {a_tag.get('title', '')} {a_tag.get_text()}"
-                    if 'youtube.com' in target_str or 'youtu.be' in target_str:
-                        vid_url = a_tag.get('href', '') or a_tag.get('title', '')
-                        break
-            
-            if vid_url:
-                normalized_url = normalize_youtube_url(vid_url)
-                
-                publish_dt = None
-                match_time = re.search(r"(\d{1,2})[/月](\d{1,2})[日\s]*(\d{1,2})[:時](\d{2})", text)
-                if match_time:
-                    try:
-                        m = int(match_time.group(1))
-                        d = int(match_time.group(2))
-                        hh = int(match_time.group(3))
-                        mm = int(match_time.group(4))
-                        pub_year = url_year
-                        if m < 3 and datetime.now().month >= 11: pub_year += 1
-                        elif m > 10 and datetime.now().month <= 2: pub_year -= 1
-                        publish_dt = datetime(pub_year, m, d, hh, mm)
-                    except ValueError: pass
-
-                video_info = {"title": text, "url": normalized_url, "publish_dt": publish_dt}
-                if is_interview and "interview" not in videos: videos["interview"] = video_info
-                if is_final and "final" not in videos: videos["final"] = video_info
-    return videos
-
-def extract_entry_conditions(soup):
-    conditions = {
-        1: "今回初めて「エリアトラウトのルアー大会」に参加する方",
-        2: "「エリアトラウトのルアー大会」参加経験がある方で3位以内の入賞経験のない方",
-        3: "「エリアトラウトのルアー大会」参加経験がある方で過去2年間、優勝経験のない方"
-    }
-    try:
-        boxes = soup.find_all("div", class_="success-box")
-        for box in boxes:
-            for br in box.find_all("br"):
-                br.replace_with("\n")
-            text_lines = [line.strip() for line in box.get_text().split("\n") if line.strip()]
-            if len(text_lines) < 2: continue
-            
-            for i in range(1, 4):
-                num_char_list = [str(i), ["１", "２", "３"][i-1], ["一", "二", "三"][i-1]]
-                if any(f"{nc}次" in text_lines[0] for nc in num_char_list):
-                    cond_text = text_lines[1]
-                    cond_text = re.sub(r"[/／].*", "", cond_text).strip()
-                    cond_text = re.sub(r"は\s*(?:\d+月|\d+[/.-]\d+).*", "", cond_text).strip()
-                    if cond_text:
-                        conditions[i] = cond_text
-    except Exception: pass
-    return conditions
-
 # ==========================================
 # LINE Push Message (Flex Message カルーセル)
 # ==========================================
 # ★ テスト配信用：個別送信（push）仕様 ★
-def send_line_flex(header_title, round_num, location, event_date_str, entry_str, page_url, theme_color, extra_info=None, main_image_url=None):
-    if not LINE_CHANNEL_ACCESS_TOKEN or not LINE_USER_ID: return
-    url = "https://api.line.me/v2/bot/message/push"
-    headers = {"Content-Type": "application/json", "Authorization": f"Bearer {LINE_CHANNEL_ACCESS_TOKEN}"}
-    
-    is_cc = "/cc" in page_url
-    title_main = f"第{round_num}回" if is_cc else f"第{round_num}戦"
-    title_sub = location if is_cc else f"{location}大会"
-    
-    is_day_before_notice = "明日大会開催" in header_title
-
-    body_contents = [
-        {"type": "text", "text": title_main, "weight": "bold", "size": "xl", "color": "#333333"},
-        {"type": "text", "text": title_sub, "weight": "bold", "size": "md", "color": "#555555", "wrap": True},
-        {"type": "separator", "margin": "md"}
-    ]
-    
-    if is_day_before_notice:
-        body_contents.append({
-            "type": "box", "layout": "vertical", "spacing": "sm", "margin": "md",
-            "contents": [
-                {"type": "text", "text": "📅 大会開催日", "size": "sm", "color": "#888888", "weight": "bold"},
-                {"type": "text", "text": event_date_str, "size": "xl", "color": "#333333", "weight": "bold"}
-            ]
-        })
-        body_contents.append({"type": "separator", "margin": "md"})
-        if extra_info:
-            body_contents.append({
-                "type": "box", "layout": "vertical", "spacing": "sm", "margin": "md", 
-                "contents": [{"type": "text", "text": f"📋 受付時間: {extra_info.get('reception', '情報参照')}", "size": "md", "color": "#D32F2F", "weight": "bold"}, {"type": "text", "text": f"💰 参加費用: {extra_info.get('fee', '情報参照')}", "size": "md", "color": "#D32F2F", "weight": "bold"}]
-            })
-            if "weather_advice" in extra_info:
-                body_contents.append({"type": "separator", "margin": "md"})
-                body_contents.append({
-                    "type": "box", "layout": "vertical", "spacing": "sm", "margin": "md",
-                    "contents": [{"type": "text", "text": "🌤 明日の天候・コンディション", "size": "sm", "color": "#888888", "weight": "bold"}, {"type": "text", "text": extra_info["weather_advice"], "size": "md", "color": "#333333", "wrap": True, "weight": "bold"}]
-                })
-    else:
-        body_contents.append({"type": "box", "layout": "vertical", "spacing": "xs", "margin": "md", "contents": [{"type": "text", "text": "📅 大会開催日", "size": "xs", "color": "#888888"}, {"type": "text", "text": event_date_str, "size": "xl", "color": "#333333"}]})
-        body_contents.append({"type": "box", "layout": "vertical", "spacing": "xs", "contents": [{"type": "text", "text": "⏰ エントリー開始日時", "size": "xs", "color": "#888888"}, {"type": "text", "text": entry_str, "size": "md", "color": "#E53935", "wrap": True}]})
-        if extra_info:
-            body_contents.append({"type": "separator", "margin": "md"})
-            if "entry_condition" in extra_info:
-                body_contents.append({
-                    "type": "box", "layout": "vertical", "spacing": "xs", "margin": "md",
-                    "contents": [{"type": "text", "text": "✅ エントリー参加条件", "size": "xs", "color": "#888888", "weight": "bold"}, {"type": "text", "text": extra_info["entry_condition"], "size": "sm", "color": "#D32F2F", "wrap": True, "weight": "bold"}]
-                })
-                body_contents.append({"type": "separator", "margin": "md"})
-            body_contents.append({
-                "type": "box", "layout": "vertical", "spacing": "xs", "margin": "md", 
-                "contents": [{"type": "text", "text": f"📋 受付時間: {extra_info.get('reception', '情報参照')}", "size": "sm", "color": "#555555"}, {"type": "text", "text": f"💰 参加費用: {extra_info.get('fee', '情報参照')}", "size": "sm", "color": "#555555"}]
-            })
-
-    bubble = {
-        "type": "bubble", 
-        "header": {"type": "box", "layout": "vertical", "backgroundColor": theme_color, "contents": [{"type": "text", "text": f"🎣 {header_title}", "color": "#FFFFFF", "weight": "bold", "size": "xs"}]}, 
-        "body": {"type": "box", "layout": "vertical", "spacing": "md", "contents": body_contents}, 
-        "footer": {"type": "box", "layout": "vertical", "contents": [{"type": "button", "action": {"type": "uri", "label": "🔗 詳細・エントリー", "uri": page_url}, "style": "primary", "color": theme_color}]}
-    }
-
-    if main_image_url:
-        bubble["hero"] = {
-            "type": "image",
-            "url": main_image_url,
-            "size": "full",
-            "aspectRatio": "16:9",
-            "aspectMode": "cover"
-        }
-
-    flex_payload = {"to": LINE_USER_ID, "messages": [{"type": "flex", "altText": f"【{header_title}】{title_main} {title_sub}", "contents": {"type": "carousel", "contents": [bubble]}}]}
-    try: requests.post(url, headers=headers, json=flex_payload, timeout=TIMEOUT_SEC)
-    except Exception: pass
-
 def send_result_line_flex(header_title, round_num, location, results, page_url, theme_color):
     if not LINE_CHANNEL_ACCESS_TOKEN or not LINE_USER_ID: return
     url = "https://api.line.me/v2/bot/message/push"
@@ -600,9 +324,9 @@ def send_result_line_flex(header_title, round_num, location, results, page_url, 
             body_contents.append({"type": "separator", "margin": "md"})
             body_contents.append({"type": "text", "text": res['congrat_msg'], "size": "xs", "color": "#D32F2F", "weight": "bold", "margin": "md", "wrap": True})
 
-        # ★ 修正: LINE内ブラウザを回避して外部ブラウザ(Safari/Chrome)で強制的に開かせるパラメータを追加
         jump_target = res.get('jump_target', name or rank)
         separator = "&" if "?" in page_url else "?"
+        # ★ 修正: 本物のURLからリンクジャンプを生成
         target_url = f"{page_url}{separator}openExternalBrowser=1#:~:text={urllib.parse.quote(jump_target)}"
 
         bubble = {
@@ -620,68 +344,49 @@ def send_result_line_flex(header_title, round_num, location, results, page_url, 
         try: requests.post(url, headers=headers, json={"to": LINE_USER_ID, "messages": [{"type": "flex", "altText": f"【大会結果】{title_text_str}", "contents": {"type": "carousel", "contents": bubbles}}]}, timeout=TIMEOUT_SEC)
         except Exception: pass
 
-def send_video_line_flex(header_title, round_num, location, video_data, page_url, theme_color, main_image_url=None):
-    if not LINE_CHANNEL_ACCESS_TOKEN or not LINE_USER_ID: return
-    url = "https://api.line.me/v2/bot/message/push"
-    headers = {"Content-Type": "application/json", "Authorization": f"Bearer {LINE_CHANNEL_ACCESS_TOKEN}"}
-    
-    is_cc = "/cc" in page_url
-    title_main = f"第{round_num}回" if is_cc else f"第{round_num}戦"
-    title_sub = location if is_cc else f"{location}大会"
-
-    vid_title = video_data.get("title", "動画が公開されました")
-    vid_url = video_data.get("url", page_url)
-    
-    body_contents = [
-        {"type": "text", "text": title_main, "weight": "bold", "size": "xl", "color": "#333333"},
-        {"type": "text", "text": title_sub, "weight": "bold", "size": "md", "color": "#555555", "wrap": True},
-        {"type": "separator"},
-        {"type": "box", "layout": "vertical", "spacing": "xs", "margin": "md", "contents": [{"type": "text", "text": vid_title, "weight": "bold", "size": "sm", "color": "#333333", "wrap": True}]}
-    ]
-    
-    bubble = {
-        "type": "bubble", 
-        "header": {"type": "box", "layout": "vertical", "backgroundColor": theme_color, "contents": [{"type": "text", "text": f"▶️ {header_title}", "color": "#FFFFFF", "weight": "bold", "size": "xs"}]}, 
-        "body": {"type": "box", "layout": "vertical", "spacing": "md", "contents": body_contents}, 
-        "footer": {"type": "box", "layout": "vertical", "spacing": "sm", "contents": [{"type": "button", "action": {"type": "uri", "label": "▶️ 動画を見る", "uri": vid_url}, "style": "primary", "color": theme_color}, {"type": "button", "action": {"type": "uri", "label": "🔗 大会ページへ", "uri": page_url}, "style": "secondary"}]}
-    }
-    
-    if main_image_url:
-        bubble["hero"] = {
-            "type": "image",
-            "url": main_image_url,
-            "size": "full",
-            "aspectRatio": "16:9",
-            "aspectMode": "cover"
-        }
-
-    flex_payload = {"to": LINE_USER_ID, "messages": [{"type": "flex", "altText": f"{header_title} {title_main} {title_sub}", "contents": bubble}]}
-    try: requests.post(url, headers=headers, json=flex_payload, timeout=TIMEOUT_SEC)
-    except Exception: pass
-
 # ==========================================
-# ★ デザイン・リンク動作確認用テスト送信
+# ★ テスト環境用：実データ取得＆送信先を強制変更
 # ==========================================
-def run_design_test_only():
-    print("=== 全パターンのテスト通知を送信します（あなた専用） ===")
-    theme_color = "#4CAF50"
-    url = "https://www.kanritsuriba.com/at/2026_21/"
-    main_img = "https://www.kanritsuriba.com/at/wp-content/uploads/2026/05/kamihama_1200.jpg"
-    
-    # リンクジャンプのテスト用ダミーデータ（シルフ大会の選手名）
-    result_img = "https://www.kanritsuriba.com/at/wp-content/uploads/2026/05/2617inomata_kouki.jpg"
-    dummy_results = [
-        {"rank": "優勝", "name": "山下 晃平", "image_url": result_img, "jump_target": "山下晃平", "congrat_msg": "🎉 優勝おめでとうございます！見事な勝利です！"},
-        {"rank": "２位", "name": "花森 麟太朗", "image_url": result_img, "jump_target": "花森麟太朗"},
-        {"rank": "３位", "name": "向井 一真", "image_url": result_img, "jump_target": "向井一真"},
-        {"rank": "ラーメン賞", "name": "", "image_url": result_img, "jump_target": "ラーメン賞"}
-    ]
-    
-    send_result_line_flex("📸【大会結果 リンク動作テスト】", "21", "白州トラウトエリア・シルフ", dummy_results, url, theme_color)
-    print("=== テスト通知完了 ===")
-
 def main():
-    run_design_test_only()
+    print("=== 実際のHPデータを用いたテスト通知（あなた専用） ===")
+    conn, _ = init_db()
+    c = conn.cursor()
+    
+    # 💡 実際のシルフ大会のURLをスクレイピング
+    url = "https://www.kanritsuriba.com/at/2026_21/"
+    round_num = "21"
+    location = "白州トラウトエリア・シルフ"
+    theme_color = get_theme_color(location)
+    
+    print(f"🔍 ページ解析中: {url}")
+    text_p1, html_p1, title_p1, lines_p1 = fetch_page_data(url)
+    sub_url = url.rstrip("/") + "/2/"
+    text_p2, html_p2, title_p2, lines_p2 = fetch_page_data(sub_url)
+
+    combined_html = html_p2 + html_p1
+    
+    # 💡 ダミーデータではなく、本物の抽出ロジックを通す
+    results_data = extract_tournament_results_from_html(combined_html)
+    
+    if results_data:
+        # 写真を補完（表彰台など）
+        podium_img_url = extract_podium_image(combined_html)
+        for r in results_data:
+            if not r.get('image_url') and podium_img_url and r['rank'] in ['優勝', '２位', '３位']:
+                r['image_url'] = podium_img_url
+                
+        # 優勝者へのお祝いメッセージ
+        for r in results_data:
+            if r['rank'] == "優勝":
+                r['congrat_msg'] = get_winner_congratulations_message(c, r['name'], round_num)
+                
+        print(f"✅ 抽出成功: {len(results_data)}件のデータを送信します。")
+        send_result_line_flex("📸【大会結果 リンク動作テスト】", round_num, location, results_data, url, theme_color)
+    else:
+        print("⚠️ 大会結果が見つかりませんでした。")
+        
+    conn.close()
+    print("=== テスト通知完了 ===")
 
 if __name__ == "__main__":
     main()

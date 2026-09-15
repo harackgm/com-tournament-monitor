@@ -80,7 +80,6 @@ def is_youtube_video_available(youtube_url):
     if not youtube_url: return False
     
     # 1. YouTube公式の oEmbed API を使って動画のステータスをチェック (APIキー不要・ブロックされない)
-    # 非公開(Private)や削除済みの場合は 401 や 404 エラーが返る
     oembed_url = f"https://www.youtube.com/oembed?url={urllib.parse.quote(youtube_url)}&format=json"
     try:
         oembed_res = requests.get(oembed_url, timeout=5)
@@ -519,7 +518,7 @@ def extract_entry_conditions(soup):
 # LINE Push Message (Flex Message カルーセル)
 # ==========================================
 # ★ 本番用：一斉送信（broadcast）仕様 ★
-def send_line_flex(header_title, round_num, location, event_date_str, entry_str, page_url, theme_color, extra_info=None, main_image_url=None):
+def send_line_flex(header_title, round_num, location, event_date_str, entry_str, page_url, theme_color, extra_info=None, main_image_url=None, custom_msg=None):
     if not LINE_CHANNEL_ACCESS_TOKEN: return
     url = "https://api.line.me/v2/bot/message/broadcast"
     headers = {"Content-Type": "application/json", "Authorization": f"Bearer {LINE_CHANNEL_ACCESS_TOKEN}"}
@@ -535,6 +534,19 @@ def send_line_flex(header_title, round_num, location, event_date_str, entry_str,
         {"type": "text", "text": title_sub, "weight": "bold", "size": "md", "color": "#555555", "wrap": True},
         {"type": "separator", "margin": "md"}
     ]
+    
+    # ★ ご要望のカスタムメッセージ（コメント）を赤色・大きめの文字で挿入
+    if custom_msg:
+        body_contents.append({
+            "type": "text", 
+            "text": custom_msg, 
+            "weight": "bold", 
+            "size": "lg", 
+            "color": "#D32F2F", 
+            "wrap": True, 
+            "margin": "md"
+        })
+        body_contents.append({"type": "separator", "margin": "md"})
     
     if is_day_before_notice:
         body_contents.append({
@@ -976,12 +988,14 @@ def main():
                         if timedelta(0) < time_diff <= timedelta(minutes=15):
                             if not n_15m:
                                 if not is_cc:
-                                    notify_queue.append({"type": "info", "header": "🔥【15分前直前リマインド】", "round_num": round_num, "location": location, "event_date_str": event_date_str, "entry_str": entry_str, "url": url, "theme_color": theme_color, "extra_info": extra_info_dict, "main_image_url": main_image_url})
+                                    msg = "⏳ まもなく受付開始です！\nページを開いて待機をお願いします！"
+                                    notify_queue.append({"type": "info", "header": "🔥【15分前直前リマインド】", "round_num": round_num, "location": location, "event_date_str": event_date_str, "entry_str": entry_str, "url": url, "theme_color": theme_color, "extra_info": extra_info_dict, "main_image_url": main_image_url, "custom_msg": msg})
                                 db_updates.append(("UPDATE tournaments SET notified_15m=1, notified_1h=1, notified_1d=1 WHERE url=?", (url,)))
                         elif timedelta(0) < time_diff <= timedelta(hours=1):
                             if not n_1h:
                                 if not is_cc:
-                                    notify_queue.append({"type": "info", "header": "⏰【1時間前リマインド】", "round_num": round_num, "location": location, "event_date_str": event_date_str, "entry_str": entry_str, "url": url, "theme_color": theme_color, "extra_info": extra_info_dict, "main_image_url": main_image_url})
+                                    msg = "🕒 エントリー開始1時間前です！\n通信環境の良い場所でご準備ください。"
+                                    notify_queue.append({"type": "info", "header": "⏰【1時間前リマインド】", "round_num": round_num, "location": location, "event_date_str": event_date_str, "entry_str": entry_str, "url": url, "theme_color": theme_color, "extra_info": extra_info_dict, "main_image_url": main_image_url, "custom_msg": msg})
                                 db_updates.append(("UPDATE tournaments SET notified_1h=1, notified_1d=1 WHERE url=?", (url,)))
                         elif timedelta(0) < time_diff <= timedelta(days=1):
                             if not n_1d:
@@ -993,12 +1007,14 @@ def main():
                         passed_time = now - entry_dt
                         target_10am = (entry_dt + timedelta(days=1)).replace(hour=10, minute=0, second=0, microsecond=0)
                         if timedelta(0) <= passed_time <= timedelta(minutes=15) and not n_just:
-                            notify_queue.append({"type": "info", "header": "🏁【エントリー開始！】", "round_num": round_num, "location": location, "event_date_str": event_date_str, "entry_str": entry_str, "url": url, "theme_color": theme_color, "extra_info": extra_info_dict, "main_image_url": main_image_url})
+                            msg = "📣 エントリーが開始されました！\n定員になる前にお急ぎください！"
+                            notify_queue.append({"type": "info", "header": "🏁【エントリー開始！】", "round_num": round_num, "location": location, "event_date_str": event_date_str, "entry_str": entry_str, "url": url, "theme_color": theme_color, "extra_info": extra_info_dict, "main_image_url": main_image_url, "custom_msg": msg})
                             db_updates.append(("UPDATE tournaments SET notified_just = 1 WHERE url = ?", (url,)))
                         elif target_10am <= now <= target_10am + timedelta(hours=12) and not n_after_24h:
                             if not is_night_mode:
                                 if not is_cc:
-                                    notify_queue.append({"type": "info", "header": "⚠️【エントリー忘れ防止】エントリーが開始されています！", "round_num": round_num, "location": location, "event_date_str": event_date_str, "entry_str": entry_str, "url": url, "theme_color": theme_color, "extra_info": extra_info_dict, "main_image_url": main_image_url})
+                                    msg = "💡 昨日からエントリーが始まっています！\nお申し込み忘れはございませんか？"
+                                    notify_queue.append({"type": "info", "header": "⚠️【エントリー忘れ防止】", "round_num": round_num, "location": location, "event_date_str": event_date_str, "entry_str": entry_str, "url": url, "theme_color": theme_color, "extra_info": extra_info_dict, "main_image_url": main_image_url, "custom_msg": msg})
                                 db_updates.append(("UPDATE tournaments SET notified_after_24h = 1 WHERE url = ?", (url,)))
 
                 if event_dt and is_cancelled == 0:
@@ -1037,7 +1053,7 @@ def main():
                 elif item.get("type") == "video":
                     send_video_line_flex(item["header"], item["round_num"], item["location"], item["video_data"], item["url"], item["theme_color"], item.get("main_image_url"))
                 else:
-                    send_line_flex(item["header"], item["round_num"], item["location"], item["event_date_str"], item["entry_str"], item["url"], item["theme_color"], item.get("extra_info"), item.get("main_image_url"))
+                    send_line_flex(item["header"], item["round_num"], item["location"], item["event_date_str"], item["entry_str"], item["url"], item["theme_color"], item.get("extra_info"), item.get("main_image_url"), item.get("custom_msg"))
                 print(f"✅ LINE送信完了: {item['header']} / 第{item['round_num']}回/戦 {item['location']}")
 
     print("全自動監視処理が正常完了しました。")

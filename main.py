@@ -991,18 +991,6 @@ def main():
                                     msg = "⏳ まもなく受付開始です！\nページを開いて待機をお願いします！"
                                     notify_queue.append({"type": "info", "header": "🔥【15分前直前リマインド】", "round_num": round_num, "location": location, "event_date_str": event_date_str, "entry_str": entry_str, "url": url, "theme_color": theme_color, "extra_info": extra_info_dict, "main_image_url": main_image_url, "custom_msg": msg})
                                 db_updates.append(("UPDATE tournaments SET notified_15m=1, notified_1h=1, notified_1d=1 WHERE url=?", (url,)))
-                        elif timedelta(0) < time_diff <= timedelta(hours=1):
-                            if not n_1h:
-                                if not is_cc:
-                                    msg = "🕒 エントリー開始1時間前です！\n通信環境の良い場所でご準備ください。"
-                                    notify_queue.append({"type": "info", "header": "⏰【1時間前リマインド】", "round_num": round_num, "location": location, "event_date_str": event_date_str, "entry_str": entry_str, "url": url, "theme_color": theme_color, "extra_info": extra_info_dict, "main_image_url": main_image_url, "custom_msg": msg})
-                                db_updates.append(("UPDATE tournaments SET notified_1h=1, notified_1d=1 WHERE url=?", (url,)))
-                        elif timedelta(0) < time_diff <= timedelta(days=1):
-                            if not n_1d:
-                                if not is_night_mode:
-                                    is_today = (entry_dt.date() == now.date())
-                                    notify_queue.append({"type": "info", "header": "【本日エントリー開始】" if is_today else "【明日エントリー開始】", "round_num": round_num, "location": location, "event_date_str": event_date_str, "entry_str": entry_str, "url": url, "theme_color": theme_color, "extra_info": extra_info_dict, "main_image_url": main_image_url})
-                                    db_updates.append(("UPDATE tournaments SET notified_1d=1 WHERE url=?", (url,)))
                     else:
                         passed_time = now - entry_dt
                         target_10am = (entry_dt + timedelta(days=1)).replace(hour=10, minute=0, second=0, microsecond=0)

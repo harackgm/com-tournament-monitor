@@ -79,30 +79,24 @@ def fetch_page_data(url):
 def is_youtube_video_available(youtube_url):
     if not youtube_url: return False
     
-    # 1. YouTube公式の oEmbed API を使って動画のステータスをチェック (APIキー不要・ブロックされない)
     oembed_url = f"https://www.youtube.com/oembed?url={urllib.parse.quote(youtube_url)}&format=json"
     try:
         oembed_res = requests.get(oembed_url, timeout=5)
         if oembed_res.status_code != 200:
-            print(f"  [YouTube判定] oEmbedエラー({oembed_res.status_code})のため非公開または無効と判定: {youtube_url}")
             return False
-    except Exception as e:
-        print(f"  [YouTube判定] oEmbed通信エラー: {e}")
+    except Exception:
         return False
 
-    # 2. oEmbedが通っても「プレミア公開の待機中」の可能性があるので、念のためHTMLもチェック
     res = fetch_url(youtube_url)
     if not res or res.status_code != 200: return False
     html = res.text
     
-    # ブロックされた際の特有の文言や、待機中の文言が含まれていないか最終確認
     unavailable_kws = [
         "isUpcoming", "公開予定", "ライブ配信まで", "プレミア公開", 
         "Private video", "非公開", "Video unavailable", "Sign in to confirm you"
     ]
     for kw in unavailable_kws:
         if kw in html: 
-            print(f"  [YouTube判定] HTML内に '{kw}' を検知したため公開前と判定: {youtube_url}")
             return False
             
     return True
@@ -471,7 +465,7 @@ def extract_videos_from_html(html_content, url_year):
                 normalized_url = normalize_youtube_url(vid_url)
                 
                 publish_dt = None
-                match_time = re.search(r"(\d{1,2})[/月](\d{1,2})[日\s]*(\d{1,2})[:時](\d{2})", text)
+                match_time = re.search(r"(\d{1,2})[/月](\d{1,2})[^0-9]*?(\d{1,2})[:時](\d{2})", text)
                 if match_time:
                     try:
                         m = int(match_time.group(1))
@@ -535,7 +529,6 @@ def send_line_flex(header_title, round_num, location, event_date_str, entry_str,
         {"type": "separator", "margin": "md"}
     ]
     
-    # ★ ご要望のカスタムメッセージ（コメント）を赤色・大きめの文字で挿入
     if custom_msg:
         body_contents.append({
             "type": "text", 
@@ -754,12 +747,16 @@ def main():
             check_row = c.fetchone()
             if check_row:
                 n_video_int, n_video_final, event_dt_str, is_cancelled = check_row
-                if n_video_int == 1 and n_video_final == 1: continue
-                if event_dt_str:
-                    try:
-                        event_dt_db = datetime.strptime(event_dt_str, "%Y-%m-%d %H:%M:%S")
-                        if (now - event_dt_db).days > 30: continue
-                    except Exception: pass
+                # ★ 修正: 動画通知が両方完了するか、中止の場合は以降監視しない
+                if (n_video_int == 1 and n_video_final == 1) or is_cancelled == 1: 
+                    continue
+                
+                # ★ 強化: 「開催日からの日数」という不安定な要素での監視打ち切りを廃止し、URLの年度で判定
+                match_year = re.search(r"/at/(\d{4})_", url)
+                url_year = int(match_year.group(1)) if match_year else current_year
+                # 開催が前年より古い（例: 2024年の大会を2026年にチェックしない）場合は監視終了
+                if url_year < current_year - 1:
+                    continue
 
             print(f"🔍 ページ解析中: {url}")
             match_year = re.search(r"/at/(\d{4})_", url)

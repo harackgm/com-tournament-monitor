@@ -260,16 +260,23 @@ def extract_podium_image(html_content):
     return None
 
 def extract_event_date_info(text, year):
-    match = re.search(r"(?:(\d{4})[年/.-])?\s*(\d{1,2})[月/.-](\d{1,2})[日]?", text)
-    if match:
+    matches = re.finditer(r"(?:(\d{4})[年/.-])?\s*(\d{1,2})[月/.-](\d{1,2})[日]?", text)
+    for match in matches:
+        end_idx = match.end()
+        # 直後に時間表記や特定のキーワードが続く場合は開催日ではないと判断してスキップ
+        if re.search(r"^\s*(\d{1,2}[:時]|公開|更新|締切|開始|まで)", text[end_idx:end_idx+10]):
+            continue
+            
         y = int(match.group(1)) if match.group(1) else year
         m = int(match.group(2))
         d = int(match.group(3))
-        try:
-            dt = datetime(y, m, d)
-            w = ["月", "火", "水", "木", "金", "土", "日"][dt.weekday()]
-            return dt, f"{y}年{m:02d}月{d:02d}日({w})"
-        except ValueError: pass
+        if 1 <= m <= 12 and 1 <= d <= 31:
+            try:
+                dt = datetime(y, m, d)
+                w = ["月", "火", "水", "木", "金", "土", "日"][dt.weekday()]
+                return dt, f"{y}年{m:02d}月{d:02d}日({w})"
+            except ValueError:
+                pass
     return None, "開催日未定"
 
 def parse_entry_datetime(text, year):
@@ -743,20 +750,29 @@ def main():
 
     for url in urls_to_check:
         try:
-            c.execute("SELECT notified_video_interview, notified_video_final, event_datetime, is_cancelled FROM tournaments WHERE url = ?", (url,))
+            c.execute("SELECT notified_video_interview, notified_video_final, event_datetime, is_cancelled, result_detected_at FROM tournaments WHERE url = ?", (url,))
             check_row = c.fetchone()
             if check_row:
-                n_video_int, n_video_final, event_dt_str, is_cancelled = check_row
+                n_video_int, n_video_final, event_dt_str, is_cancelled, res_det_at_str = check_row
+                
                 # ★ 修正: 動画通知が両方完了するか、中止の場合は以降監視しない
                 if (n_video_int == 1 and n_video_final == 1) or is_cancelled == 1: 
                     continue
                 
-                # ★ 強化: 「開催日からの日数」という不安定な要素での監視打ち切りを廃止し、URLの年度で判定
-                match_year = re.search(r"/at/(\d{4})_", url)
-                url_year = int(match_year.group(1)) if match_year else current_year
-                # 開催が前年より古い（例: 2024年の大会を2026年にチェックしない）場合は監視終了
-                if url_year < current_year - 1:
-                    continue
+                # ★ 動画お蔵入り対策：結果検知から90日（約3ヶ月）経過しても動画が公開されない場合は監視ストップ
+                if res_det_at_str:
+                    try:
+                        res_dt = datetime.strptime(res_det_at_str, "%Y-%m-%d %H:%M:%S")
+                        if (now - res_dt).days > 90:
+                            continue
+                    except Exception: 
+                        pass
+                else:
+                    # 結果が未検知の場合は、URLの年度で古いものを足切り
+                    match_year = re.search(r"/at/(\d{4})_", url)
+                    url_year = int(match_year.group(1)) if match_year else current_year
+                    if url_year < current_year - 1:
+                        continue
 
             print(f"🔍 ページ解析中: {url}")
             match_year = re.search(r"/at/(\d{4})_", url)
@@ -886,7 +902,7 @@ def main():
                     c.execute("UPDATE tournaments SET winner_name = ? WHERE url = ?", (winner_name, url))
                 
                 # ==========================================
-                # ★ 動画公開の待機・通知ロジック (oEmbed対応版)
+                # ★ 動画公開の待機・通知ロジック
                 # ==========================================
                 is_final_available = False
                 if "final" in videos_data:

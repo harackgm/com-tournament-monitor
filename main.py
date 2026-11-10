@@ -391,3 +391,100 @@ def main():
                                     r['image_url'] = podium_img_url
 
                             final_results_to_send = [r for r in results_data if r['rank'] != "ラーメン賞" or r.get('image_url')]
+                            if not is_night_mode:
+                                notify_queue.append({"type": "result", "header": "📸【大会結果 写真追加！】", "round_num": round_num, "location": location, "results": final_results_to_send, "url": url, "theme_color": theme_color})
+                                db_updates.append(("UPDATE tournaments SET notified_result = 2 WHERE url = ?", (url,)))
+
+                if n_new == 0 and not is_night_mode:
+                    notify_queue.append({"type": "info", "header": "🆕【新規大会開催予定】", "round_num": round_num, "location": location, "event_date_str": event_date_str, "entry_str": entry_str, "url": url, "theme_color": theme_color, "extra_info": extra_info_dict, "main_image_url": main_image_url})
+                    c.execute("UPDATE tournaments SET notified_new = 1 WHERE url = ?", (url,))
+
+                if is_cancelled == 1 and db_cancelled == 0:
+                    notify_queue.append({"type": "info", "header": "🚨【緊急：開催中止・変更】", "round_num": round_num, "location": location, "event_date_str": event_date_str, "entry_str": "開催中止・変更が発生しました", "url": url, "theme_color": "#D32F2F", "main_image_url": main_image_url})
+                    c.execute("UPDATE tournaments SET is_cancelled = 1 WHERE url = ?", (url,))
+                    continue
+
+                is_date_changed = (db_event_date != event_date_str or db_entry_str != entry_str)
+                is_info_changed = (db_reception != reception_time or db_fee != fee)
+                if is_date_changed or is_info_changed or (db_round != round_num) or (db_loc != location):
+                    if is_date_changed and not is_night_mode:
+                        if not is_initial_setup and (db_event_date == "開催日未定" or db_entry_str == "エントリー日時未定"):
+                            notify_queue.append({"type": "info", "header": "📢【大会情報更新】", "round_num": round_num, "location": location, "event_date_str": event_date_str, "entry_str": entry_str, "url": url, "theme_color": theme_color, "extra_info": extra_info_dict, "main_image_url": main_image_url})
+                    c.execute("UPDATE tournaments SET round_num = ?, location = ?, event_date = ?, entry_datetime = ?, entry_str = ?, reception_time = ?, fee = ?, original_text = ? WHERE url = ?", (round_num, location, event_date_str, current_entry_dt_str, entry_str, reception_time, fee, combined_text, url))
+
+                if entry_dt and is_cancelled == 0:
+                    if entry_dt > now:
+                        time_diff = entry_dt - now
+                        if timedelta(0) < time_diff <= timedelta(minutes=15):
+                            if not n_15m:
+                                if not is_cc:
+                                    msg = "⏳ まもなく受付開始です！\nページを開いて待機をお願いします！"
+                                    notify_queue.append({"type": "info", "header": "🔥【15分前直前リマインド】", "round_num": round_num, "location": location, "event_date_str": event_date_str, "entry_str": entry_str, "url": url, "theme_color": theme_color, "extra_info": extra_info_dict, "main_image_url": main_image_url, "custom_msg": msg})
+                                db_updates.append(("UPDATE tournaments SET notified_15m=1, notified_1h=1, notified_1d=1 WHERE url=?", (url,)))
+                        elif timedelta(0) < time_diff <= timedelta(hours=1):
+                            if not n_1h:
+                                db_updates.append(("UPDATE tournaments SET notified_1h=1, notified_1d=1 WHERE url=?", (url,)))
+                        elif timedelta(0) < time_diff <= timedelta(days=1):
+                            if not n_1d:
+                                db_updates.append(("UPDATE tournaments SET notified_1d=1 WHERE url=?", (url,)))
+                    else:
+                        passed_time = now - entry_dt
+                        target_10am = (entry_dt + timedelta(days=1)).replace(hour=10, minute=0, second=0, microsecond=0)
+                        if timedelta(0) <= passed_time <= timedelta(minutes=15) and not n_just:
+                            msg = "📣 エントリーが開始されました！\n定員になる前にお急ぎください！"
+                            notify_queue.append({"type": "info", "header": "🏁【エントリー開始！】", "round_num": round_num, "location": location, "event_date_str": event_date_str, "entry_str": entry_str, "url": url, "theme_color": theme_color, "extra_info": extra_info_dict, "main_image_url": main_image_url, "custom_msg": msg})
+                            db_updates.append(("UPDATE tournaments SET notified_just = 1 WHERE url = ?", (url,)))
+                        elif target_10am <= now <= target_10am + timedelta(hours=12) and not n_after_24h:
+                            if not is_night_mode:
+                                if not is_cc:
+                                    msg = "💡 昨日からエントリーが始まっています！\nお申し込み忘れはございませんか？"
+                                    notify_queue.append({"type": "info", "header": "⚠️【エントリー忘れ防止】", "round_num": round_num, "location": location, "event_date_str": event_date_str, "entry_str": entry_str, "url": url, "theme_color": theme_color, "extra_info": extra_info_dict, "main_image_url": main_image_url, "custom_msg": msg})
+                                db_updates.append(("UPDATE tournaments SET notified_after_24h = 1 WHERE url = ?", (url,)))
+
+                if event_dt and is_cancelled == 0:
+                    is_day_before = (now.date() == (event_dt.date() - timedelta(days=1)))
+                    is_in_target_hours = (EVENT_1D_HOUR_START <= now.hour < EVENT_1D_HOUR_END)
+                    if is_day_before and is_in_target_hours and not n_event_1d:
+                        weather_advice = get_weather_advice(location)
+                        evt_extra = extra_info_dict.copy()
+                        evt_extra["weather_advice"] = weather_advice
+                        notify_queue.append({"type": "info", "header": "📅【明日大会開催！直前案内】", "round_num": round_num, "location": location, "event_date_str": event_date_str, "entry_str": entry_str, "url": url, "theme_color": theme_color, "extra_info": evt_extra, "main_image_url": main_image_url})
+                        db_updates.append(("UPDATE tournaments SET notified_event_1d = 1 WHERE url = ?", (url,)))
+
+        except Exception as e:
+            print(f"⚠️ 予期せぬエラーが発生しました (URL: {url}): {e}")
+
+    # 重複通知の排除
+    unique_notify_queue = []
+    seen = set()
+    for item in notify_queue:
+        identifier = f"{item.get('type')}_{item.get('round_num')}_{item.get('location')}"
+        if identifier not in seen:
+            seen.add(identifier)
+            unique_notify_queue.append(item)
+    notify_queue = unique_notify_queue
+
+    # DB一括更新
+    for query, params in db_updates:
+        c.execute(query, params)
+    conn.commit()
+    conn.close()
+
+    # LINE通知の実行（MAX制御ストッパー付き）
+    if not is_initial_setup and notify_queue:
+        if len(notify_queue) > MAX_NOTIFY_LIMIT:
+            print(f"⚠️ 大量検知({len(notify_queue)}件)のため、LINEへの連続送信を安全装置により停止しました。")
+        else:
+            for item in notify_queue:
+                if item.get("type") == "result":
+                    send_result_line_flex(item["header"], item["round_num"], item["location"], item["results"], item["url"], item["theme_color"], LINE_CHANNEL_ACCESS_TOKEN, LINE_USER_ID, IS_TEST_MODE)
+                elif item.get("type") == "video":
+                    send_video_line_flex(item["header"], item["round_num"], item["location"], item["video_data"], item["url"], item["theme_color"], LINE_CHANNEL_ACCESS_TOKEN, LINE_USER_ID, IS_TEST_MODE, item.get("main_image_url"))
+                else:
+                    send_line_flex(item["header"], item["round_num"], item["location"], item["event_date_str"], item["entry_str"], item["url"], item["theme_color"], LINE_CHANNEL_ACCESS_TOKEN, LINE_USER_ID, IS_TEST_MODE, item.get("extra_info"), item.get("main_image_url"), item.get("custom_msg"))
+                print(f"✅ LINE送信完了: {item['header']} / 第{item['round_num']}回/戦 {item['location']}")
+
+    print("全自動監視処理が正常完了しました。")
+
+if __name__ == "__main__":
+    main()

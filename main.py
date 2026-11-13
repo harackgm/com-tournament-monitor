@@ -37,7 +37,7 @@ LINE_USER_ID = os.environ.get("LINE_USER_ID", "")
 # ★★★ テスト・本番 切り替えスイッチ ★★★
 # True : 管理者(LINE_USER_ID)のみにPush送信（安全確認用）
 # False: 登録者全員へ一斉送信（本番運用用）
-IS_TEST_MODE = True
+IS_TEST_MODE = False
 
 DB_PATH = "tournaments.db"
 MAX_NOTIFY_LIMIT = 5  # 大量通知ストッパー（1回の巡回でこれを超えたら通知を抑止）
